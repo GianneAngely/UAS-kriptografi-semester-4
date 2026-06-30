@@ -2,892 +2,784 @@ import os
 import sys
 import time
 import json
-import random
+import base64
 import datetime
-import threading
 from pathlib import Path
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.backends import default_backend
 
-BASE = Path("pki_data")
+try:
+    from cryptography.hazmat.primitives.asymmetric import rsa, padding
+    from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import utils as asym_utils
+    from cryptography.exceptions import InvalidSignature
+    CRYPTO_OK = True
+except ImportError:
+    CRYPTO_OK = False
 
-ESC    = "\033["
-RESET  = f"{ESC}0m"
-BOLD   = f"{ESC}1m"
-DIM    = f"{ESC}2m"
-ITALIC = f"{ESC}3m"
-BLINK  = f"{ESC}5m"
-REV    = f"{ESC}7m"
+KEYS_DIR = Path("keys")
+CERTS_DIR = Path("certs")
+MSGS_DIR = Path("messages")
 
-FG = {
-    "black":    f"{ESC}30m", "red":      f"{ESC}31m", "green":   f"{ESC}32m",
-    "yellow":   f"{ESC}33m", "blue":     f"{ESC}34m", "magenta": f"{ESC}35m",
-    "cyan":     f"{ESC}36m", "white":    f"{ESC}37m",
-    "bblack":   f"{ESC}90m", "bred":     f"{ESC}91m", "bgreen":  f"{ESC}92m",
-    "byellow":  f"{ESC}93m", "bblue":    f"{ESC}94m", "bmagenta":f"{ESC}95m",
-    "bcyan":    f"{ESC}96m", "bwhite":   f"{ESC}97m",
-}
-BG = {
-    "black":   f"{ESC}40m",  "red":     f"{ESC}41m",  "green":   f"{ESC}42m",
-    "yellow":  f"{ESC}43m",  "blue":    f"{ESC}44m",  "magenta": f"{ESC}45m",
-    "cyan":    f"{ESC}46m",  "white":   f"{ESC}47m",
-    "bblack":  f"{ESC}100m", "bred":    f"{ESC}101m",  "bgreen":  f"{ESC}102m",
-    "byellow": f"{ESC}103m", "bblue":   f"{ESC}104m",  "bmagenta":f"{ESC}105m",
-    "bcyan":   f"{ESC}106m", "bwhite":  f"{ESC}107m",
-}
+for d in [KEYS_DIR, CERTS_DIR, MSGS_DIR]:
+    d.mkdir(exist_ok=True)
 
-def fg(text, color, bold=False, dim=False):
-    s = FG.get(color, "")
-    if bold: s += BOLD
-    if dim:  s += DIM
-    return s + str(text) + RESET
+class C:
+    RESET   = "\033[0m"
+    BOLD    = "\033[1m"
+    DIM     = "\033[2m"
+    BLINK   = "\033[5m"
+    GREEN   = "\033[38;5;82m"
+    CYAN    = "\033[38;5;51m"
+    YELLOW  = "\033[38;5;220m"
+    RED     = "\033[38;5;196m"
+    MAGENTA = "\033[38;5;201m"
+    BLUE    = "\033[38;5;33m"
+    WHITE   = "\033[38;5;255m"
+    GRAY    = "\033[38;5;245m"
+    ORANGE  = "\033[38;5;214m"
+    BGBLACK = "\033[40m"
+    BGGREEN = "\033[48;5;22m"
+    BGRED   = "\033[48;5;52m"
+    BGCYAN  = "\033[48;5;23m"
 
-def gradient_text(text, colors):
-    result = ""
-    n = len(colors)
-    for i, ch in enumerate(text):
-        result += FG.get(colors[i % n], "") + ch
-    return result + RESET
+W = 62
 
-def clear():
-    os.system("clear" if os.name != "nt" else "cls")
+def clr():
+    os.system('clear' if os.name != 'nt' else 'cls')
 
-def hide_cursor():
-    sys.stdout.write("\033[?25l")
-    sys.stdout.flush()
-
-def show_cursor():
-    sys.stdout.write("\033[?25h")
-    sys.stdout.flush()
-
-def typewriter(text, delay=0.012, colors=None):
-    colors = colors or ["bcyan"]
-    n = len(colors)
-    for i, ch in enumerate(text):
-        sys.stdout.write(FG.get(colors[i % n], "") + ch + RESET)
+def slow_print(text, delay=0.012):
+    for ch in text:
+        sys.stdout.write(ch)
         sys.stdout.flush()
         time.sleep(delay)
     print()
 
-def matrix_rain(rows=4, cols=78, duration=1.0):
-    hide_cursor()
-    chars = "アイウエオカキクケコサシスセソタチツテトナニヌネノ0123456789ABCDEF∑∆Ωλψ"
+def box_line(char="─", color=C.GREEN):
+    return f"{color}{char * W}{C.RESET}"
+
+def box_top(color=C.GREEN):
+    return f"{color}╔{'═' * W}╗{C.RESET}"
+
+def box_bot(color=C.GREEN):
+    return f"{color}╚{'═' * W}╝{C.RESET}"
+
+def box_mid(color=C.GREEN):
+    return f"{color}╠{'═' * W}╣{C.RESET}"
+
+def box_row(text="", color=C.GREEN, text_color=C.WHITE, center=False):
+    inner = W - 2
+    if center:
+        content = text.center(inner)
+    else:
+        content = text.ljust(inner)
+    visible_len = len(text)
+    pad = inner - visible_len
+    if center:
+        lpad = pad // 2
+        rpad = pad - lpad
+        content = " " * lpad + text + " " * rpad
+    else:
+        content = text + " " * max(0, pad)
+    return f"{color}║{C.RESET}{text_color}{content[:inner]}{C.RESET}{color}║{C.RESET}"
+
+def tag(label, color):
+    return f"{color}[{label}]{C.RESET}"
+
+def status_ok(msg):
+    print(f"  {C.GREEN}✔{C.RESET}  {C.WHITE}{msg}{C.RESET}")
+
+def status_err(msg):
+    print(f"  {C.RED}✘{C.RESET}  {C.RED}{msg}{C.RESET}")
+
+def status_info(msg):
+    print(f"  {C.CYAN}◆{C.RESET}  {C.GRAY}{msg}{C.RESET}")
+
+def status_warn(msg):
+    print(f"  {C.YELLOW}▲{C.RESET}  {C.YELLOW}{msg}{C.RESET}")
+
+def spinner(msg, duration=0.8):
+    frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
     end = time.time() + duration
-    while time.time() < end:
-        line = ""
-        for _ in range(cols):
-            r = random.random()
-            if r < 0.05:
-                line += FG["bwhite"] + BOLD + random.choice(chars) + RESET
-            elif r < 0.15:
-                line += FG["bgreen"] + BOLD + random.choice(chars) + RESET
-            elif r < 0.4:
-                line += FG["green"] + random.choice(chars) + RESET
-            else:
-                line += FG["bblack"] + DIM + random.choice(chars) + RESET
-        print(line)
-        time.sleep(0.045)
-    show_cursor()
-
-def glitch_text(text, times=3):
-    glitch_chars = "▓░▒█▄▀■□●○◆◇▪▫"
-    for _ in range(times):
-        corrupted = ""
-        for ch in text:
-            if random.random() < 0.18:
-                corrupted += FG["bred"] + BOLD + random.choice(glitch_chars) + RESET
-            else:
-                corrupted += ch
-        sys.stdout.write("\r" + corrupted)
-        sys.stdout.flush()
-        time.sleep(0.06)
-    sys.stdout.write("\r" + text + "\n")
-    sys.stdout.flush()
-
-def spinner_fancy(msg, duration=1.4):
-    frames  = ["⣾","⣽","⣻","⢿","⡿","⣟","⣯","⣷"]
-    bar_w   = 22
-    end_t   = time.time() + duration
-    hide_cursor()
     i = 0
-    while time.time() < end_t:
-        elapsed  = time.time() - (end_t - duration)
-        progress = min(elapsed / duration, 1.0)
-        filled   = int(bar_w * progress)
-        bar = (FG["bgreen"] + BOLD + "█" * filled + RESET +
-               FG["bblack"] + DIM + "░" * (bar_w - filled) + RESET)
-        pct   = int(progress * 100)
-        frame = FG["bcyan"] + BOLD + frames[i % len(frames)] + RESET
-        sys.stdout.write(
-            f"\r  {frame} {FG['bwhite']}{BOLD}{msg}{RESET}  "
-            f"{FG['bblack']}[{RESET}{bar}{FG['bblack']}]{RESET} "
-            f"{FG['byellow']}{BOLD}{pct:3d}%{RESET}  "
-        )
+    while time.time() < end:
+        sys.stdout.write(f"\r  {C.CYAN}{frames[i % len(frames)]}{C.RESET}  {C.GRAY}{msg}...{C.RESET}")
         sys.stdout.flush()
-        time.sleep(0.06)
+        time.sleep(0.07)
         i += 1
-    sys.stdout.write(
-        f"\r  {FG['bgreen'] + BOLD}✓{RESET} {FG['bgreen']}{BOLD}{msg}{RESET}  "
-        f"{FG['bblack']}[{RESET}{FG['bgreen'] + BOLD}{'█' * bar_w}{RESET}{FG['bblack']}]{RESET} "
-        f"{FG['bgreen']}{BOLD}100%{RESET}       \n"
-    )
-    show_cursor()
-
-def ok(msg):
-    print(f"  {FG['bgreen'] + BOLD}✓{RESET} {FG['bgreen']}{BOLD}{msg}{RESET}")
-
-def err(msg):
-    print(f"  {FG['bred'] + BOLD}✗{RESET} {FG['bred']}{BOLD}{msg}{RESET}")
-
-def warn(msg):
-    print(f"  {FG['byellow'] + BOLD}⚠{RESET} {FG['byellow']}{msg}{RESET}")
-
-def info(msg):
-    print(f"  {FG['bcyan'] + BOLD}ℹ{RESET} {FG['bwhite']}{msg}{RESET}")
-
-def divider(width=74, color="bblue", style="thin"):
-    char = "─" if style == "thin" else "═"
-    print(f"  {FG[color] + DIM}{char * width}{RESET}")
-
-def section(title, icon="◈", color="bcyan"):
-    w = 70
-    print()
-    top = f"{FG['bblue'] + DIM}╔{'═' * w}╗{RESET}"
-    mid_icon = f"{FG[color] + BOLD}{icon}{RESET}"
-    mid_text = gradient_text(f" {title}", ["bcyan", "bblue", "bcyan", "bblue", "bcyan"])
-    pad = w - len(title) - 3
-    mid = f"{FG['bblue']}║{RESET} {mid_icon}{mid_text}{' ' * max(pad, 0)}{FG['bblue']}║{RESET}"
-    bot = f"{FG['bblue'] + DIM}╚{'═' * w}╝{RESET}"
-    print(f"  {top}")
-    print(f"  {mid}")
-    print(f"  {bot}")
-    print()
-
-def panel(lines, border_color="bcyan", title=None, accent=None):
-    raw_lens  = [len(l) for l in lines]
-    inner_w   = max(max(raw_lens) + 4, 46) if raw_lens else 46
-    top_title = f" {title} " if title else ""
-    pad_l     = (inner_w - len(top_title)) // 2
-    pad_r     = inner_w - len(top_title) - pad_l
-    tl_color  = FG.get(accent or border_color, "")
-    top  = (FG[border_color] + "╔" + "═" * pad_l + tl_color + top_title +
-            FG[border_color] + "═" * pad_r + "╗" + RESET)
-    print(f"  {top}")
-    for l in lines:
-        pad = inner_w - len(l) - 1
-        if l.strip() == "":
-            print(f"  {FG[border_color]}║{RESET}{' ' * (inner_w + 1)}{FG[border_color]}║{RESET}")
-        else:
-            print(f"  {FG[border_color]}║{RESET} {FG['bwhite']}{l}{RESET}{' ' * max(pad, 0)}{FG[border_color]}║{RESET}")
-    print(f"  {FG[border_color]}╚{'═' * (inner_w + 1)}╝{RESET}")
-
-def tag(text, color="bblue"):
-    return f"{FG[color] + BOLD}[{text}]{RESET}"
-
-LOGO = r"""
-  ██████╗ ██╗  ██╗██╗    ███████╗██╗   ██╗███████╗████████╗███████╗███╗   ███╗
-  ██╔══██╗██║ ██╔╝██║    ██╔════╝╚██╗ ██╔╝██╔════╝╚══██╔══╝██╔════╝████╗ ████║
-  ██████╔╝█████╔╝ ██║    ███████╗ ╚████╔╝ ███████╗   ██║   █████╗  ██╔████╔██║
-  ██╔═══╝ ██╔═██╗ ██║    ╚════██║  ╚██╔╝  ╚════██║   ██║   ██╔══╝  ██║╚██╔╝██║
-  ██║     ██║  ██╗██║    ███████║   ██║   ███████║   ██║   ███████╗██║ ╚═╝ ██║
-  ╚═╝     ╚═╝  ╚═╝╚═╝    ╚══════╝   ╚═╝   ╚══════╝   ╚═╝   ╚══════╝╚═╝     ╚═╝
-"""
-
-LOGO_SMALL = r"""
-  ██████╗ ██╗  ██╗██╗    ███████╗██╗   ██╗███████╗████████╗███████╗███╗   ███╗
-"""
-
-def boot_sequence():
-    clear()
-    hide_cursor()
-    matrix_rain(rows=6, cols=80, duration=0.7)
-    print()
-    boot_msgs = [
-        ("BIOS PKI v2.4.1 …………………………… OK",     "bgreen"),
-        ("Loading RSA-2048 crypto engine ……… OK", "bgreen"),
-        ("Mounting certificate store ………… OK",   "bcyan"),
-        ("Starting X.509 chain validator …… OK",  "bblue"),
-        ("Initializing PSS/OAEP modules …… OK",   "bmagenta"),
-        ("Verifying chain of trust ………………… OK",  "byellow"),
-        ("",                                        "bblack"),
-        ("[ ALL SYSTEMS OPERATIONAL ]",             "bgreen"),
-    ]
-    for msg, color in boot_msgs:
-        if msg == "":
-            print()
-            continue
-        sys.stdout.write(f"  {FG['bblack'] + DIM}▸{RESET} ")
-        sys.stdout.flush()
-        for ch in msg:
-            sys.stdout.write(FG[color] + ch + RESET)
-            sys.stdout.flush()
-            time.sleep(0.006)
-        print()
-        time.sleep(0.04)
-    show_cursor()
-    time.sleep(0.3)
-
-def _logo_gradient_line(line, tick):
-    palettes = [
-        ["bcyan", "bblue", "bcyan", "bblue"],
-        ["bblue", "bcyan", "bblue", "bcyan"],
-        ["bmagenta", "bcyan", "bblue", "bcyan"],
-        ["bcyan", "bmagenta", "bcyan", "bblue"],
-    ]
-    pal = palettes[tick % len(palettes)]
-    result = ""
-    n = len(pal)
-    for i, ch in enumerate(line):
-        result += FG.get(pal[(i + tick) % n], "") + ch
-    return result + RESET
-
-def header_banner():
-    clear()
-    logo_lines = LOGO.split("\n")
-    for i, line in enumerate(logo_lines):
-        pal = ["bcyan", "bblue", "bcyan", "bblue", "bcyan", "bmagenta"]
-        col = pal[i % len(pal)]
-        print(FG[col] + BOLD + line + RESET)
-    now = datetime.datetime.now().strftime("%Y-%m-%d  %H:%M:%S")
-    W   = 78
-    print(f"  {FG['bblue'] + DIM}{'▄' * W}{RESET}")
-    inner = (
-        f" {FG['byellow'] + BOLD}◈ UAS KRIPTOGRAFI{RESET}"
-        f"  {FG['bblack'] + DIM}│{RESET}  "
-        f"{FG['bcyan'] + BOLD}PUBLIC KEY INFRASTRUCTURE{RESET}"
-        f"  {FG['bblack'] + DIM}│{RESET}  "
-        f"{FG['bblack'] + DIM}{now}{RESET} "
-    )
-    sub = (
-        f" {FG['bblack'] + DIM}"
-        f"RSA-2048  ·  PSS Signature  ·  OAEP Encryption  ·  X.509 Chain  ·  Semester 4{RESET}"
-    )
-    print(f"  {FG['bblue']}▌{RESET}{inner}{FG['bblue']}▐{RESET}")
-    print(f"  {FG['bblue']}▌{RESET}{sub}{FG['bblue']}▐{RESET}")
-    print(f"  {FG['bblue'] + DIM}{'▀' * W}{RESET}")
-    print()
-
-def status_bar():
-    ca_ok = (BASE / "ca" / "ca_cert.json").exists()
-    c1_ok = (BASE / "cust1" / "cert.json").exists()
-    c2_ok = (BASE / "cust2" / "cert.json").exists()
-    c3_ok = (BASE / "cust3" / "cert.json").exists()
-
-    def node_badge(label, ok_flag):
-        if ok_flag:
-            return (f"{FG['bgreen'] + BOLD}▐{BG['green'] + FG['black'] + BOLD} {label} {RESET}"
-                    f"{FG['bgreen'] + DIM}▌ {FG['bgreen']}LIVE{RESET}")
-        else:
-            return (f"{FG['bblack'] + BOLD}▐{BG['bblack'] + FG['bwhite'] + DIM} {label} {RESET}"
-                    f"{FG['bblack'] + DIM}▌ {FG['bblack'] + DIM}PEND{RESET}")
-
-    badges = "    ".join([
-        node_badge("CA", ca_ok),
-        node_badge("CUST1", c1_ok),
-        node_badge("CUST2", c2_ok),
-        node_badge("CUST3", c3_ok),
-    ])
-    divider(76, "bblue", "thin")
-    print(f"  {FG['byellow'] + BOLD}TRUST CHAIN{RESET}  {badges}")
-    divider(76, "bblue", "thin")
-    print()
-
-ROLE_META = {
-    "CA":   ("byellow",  "●", "AUTHORITY"),
-    "RA":   ("bmagenta", "●", "REGISTRAR"),
-    "CUST": ("bcyan",    "●", "USER"),
-    "TEST": ("bred",     "▲", "ATTACK"),
-    "INFO": ("bblue",    "◆", "SYSTEM"),
-    "    ": ("bblack",   "·", ""),
-}
-
-MENU_ENTRIES = [
-    ("1", "CA",   "Inisialisasi Key Pair CA"),
-    ("2", "CA",   "Terbitkan Sertifikat Digital"),
-    ("3", "RA",   "Validasi & Setujui Request Cust"),
-    ("4", "CUST", "Daftar & Buat Key Pair"),
-    ("5", "CUST", "Buat Tanda Tangan Digital"),
-    ("6", "CUST", "Enkripsi Pesan Rahasia"),
-    ("7", "CUST", "Dekripsi Pesan Rahasia"),
-    ("8", "CUST", "Verifikasi Tanda Tangan"),
-    ("9", "TEST", "Negative Test — Simulasi Serangan"),
-    ("0", "INFO", "Status & Info Sistem PKI"),
-    ("q", "    ", "Keluar dari sistem"),
-]
-
-def menu():
-    header_banner()
-    status_bar()
-    W = 68
-    border = FG["bblue"]
-    dim    = FG["bblue"] + DIM
-    print(f"  {dim}┏{'━' * W}┓{RESET}")
-    title_s = "  MENU UTAMA  "
-    pad_l   = (W - len(title_s)) // 2
-    pad_r   = W - len(title_s) - pad_l
-    print(
-        f"  {border}┃{RESET}"
-        f"{'─' * pad_l}"
-        f"{FG['bwhite'] + BOLD}{title_s}{RESET}"
-        f"{'─' * pad_r}"
-        f"{border}┃{RESET}"
-    )
-    print(f"  {dim}┣{'━' * W}┫{RESET}")
-    print(f"  {border}┃{RESET}{'  ' + FG['bblack'] + DIM + 'KEY  ROLE        DESC' + RESET:<{W-1}}{border}┃{RESET}")
-    print(f"  {dim}┠{'─' * W}┨{RESET}")
-    for num, role, label in MENU_ENTRIES:
-        color, dot, badge = ROLE_META.get(role, ("bwhite", "·", ""))
-        key_s  = f"{FG['bgreen'] + BOLD} {num} {RESET}"
-        dot_s  = f"{FG[color] + BOLD}{dot}{RESET}"
-        role_s = f"{FG[color] + BOLD}{role:<4}{RESET}"
-        sep    = f"{FG['bblack'] + DIM}│{RESET}"
-        lbl_s  = f"{FG['bwhite']}{label}{RESET}"
-        badge_s = f"{FG[color] + DIM}[{badge}]{RESET}" if badge else ""
-        inner  = f" {key_s} {sep} {dot_s} {role_s} {sep} {lbl_s}  {badge_s}"
-        vis_len = 3 + 3 + 3 + 1 + len(role) + 3 + len(label) + 2 + (len(badge) + 2 if badge else 0)
-        pad    = max(W - vis_len, 0)
-        print(f"  {border}┃{RESET}{inner}{' ' * pad}{border}┃{RESET}")
-    print(f"  {dim}┗{'━' * W}┛{RESET}")
-    print()
-    sys.stdout.write(
-        f"  {FG['bgreen'] + BOLD}❯❯{RESET} "
-        f"{FG['bwhite'] + BOLD}Pilih menu:{RESET} "
-        f"{FG['bcyan']}"
-    )
+    sys.stdout.write(f"\r  {C.GREEN}✔{C.RESET}  {C.WHITE}{msg}{C.RESET}{'  ':10}\n")
     sys.stdout.flush()
 
-def ensure_dirs(name):
-    (BASE / name).mkdir(parents=True, exist_ok=True)
+def progress_bar(label, steps=20, delay=0.03):
+    sys.stdout.write(f"\n  {C.GRAY}{label}{C.RESET}\n  {C.GREEN}")
+    for i in range(steps + 1):
+        filled = int((i / steps) * 30)
+        bar = "█" * filled + "░" * (30 - filled)
+        pct = int((i / steps) * 100)
+        sys.stdout.write(f"\r  {C.GREEN}[{bar}]{C.RESET} {C.YELLOW}{pct:3d}%{C.RESET}")
+        sys.stdout.flush()
+        time.sleep(delay)
+    print()
 
-def generate_rsa_keypair():
-    return rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=default_backend())
+def section_header(title, subtitle="", role_tag="", role_color=C.GREEN):
+    clr()
+    print()
+    print(box_top(role_color))
+    if role_tag:
+        rt = f" {role_color}{C.BOLD}{role_tag}{C.RESET} "
+        pad_inner = W - 2 - len(role_tag) - 2
+        row_content = f" {role_color}{C.BOLD}{role_tag}{C.RESET}" + " " * (W - 2 - len(role_tag) - 1)
+        print(f"{role_color}║{C.RESET}{row_content}{role_color}║{C.RESET}")
+        print(box_mid(role_color))
+    inner = W - 2
+    t_pad = max(0, (inner - len(title)) // 2)
+    t_content = " " * t_pad + f"{C.BOLD}{C.WHITE}{title}{C.RESET}" + " " * max(0, inner - t_pad - len(title))
+    print(f"{role_color}║{C.RESET}{t_content}{role_color}║{C.RESET}")
+    if subtitle:
+        s_pad = max(0, (inner - len(subtitle)) // 2)
+        s_content = " " * s_pad + f"{C.GRAY}{subtitle}{C.RESET}" + " " * max(0, inner - s_pad - len(subtitle))
+        print(f"{role_color}║{C.RESET}{s_content}{role_color}║{C.RESET}")
+    print(box_bot(role_color))
+    print()
 
-def save_private_key(priv, path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(priv.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.TraditionalOpenSSL,
-        serialization.NoEncryption()
-    ))
+def pause():
+    print()
+    print(f"  {C.GRAY}{'─' * 50}{C.RESET}")
+    input(f"  {C.CYAN}⏎  Tekan Enter untuk kembali ke menu...{C.RESET}")
 
-def save_public_key(pub, path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(pub.public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo
-    ))
+def check_crypto():
+    if not CRYPTO_OK:
+        status_err("Library 'cryptography' belum terinstall!")
+        status_info("Jalankan: pip install cryptography")
+        pause()
+        return False
+    return True
+
+def gen_rsa_keypair():
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+def save_private_key(key, path):
+    with open(path, "wb") as f:
+        f.write(key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption()
+        ))
+
+def save_public_key(key, path):
+    with open(path, "wb") as f:
+        f.write(key.public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo
+        ))
 
 def load_private_key(path):
-    return serialization.load_pem_private_key(path.read_bytes(), password=None, backend=default_backend())
+    with open(path, "rb") as f:
+        return serialization.load_pem_private_key(f.read(), password=None)
 
 def load_public_key(path):
-    return serialization.load_pem_public_key(path.read_bytes(), backend=default_backend())
+    with open(path, "rb") as f:
+        return serialization.load_pem_public_key(f.read())
 
-def ca_init():
-    section("CERTIFICATE AUTHORITY — Inisialisasi", "◈", "byellow")
-    ensure_dirs("ca")
-    if (BASE / "ca" / "private.pem").exists():
-        warn("CA sudah diinisialisasi sebelumnya.")
-        choice = input(f"\n  {FG['byellow']}Timpa ulang? (y/N):{RESET} {FG['bcyan']}").strip().lower()
-        print(RESET, end="")
-        if choice != "y":
-            return
-    spinner_fancy("Generating RSA-2048 keypair untuk CA", 1.8)
-    priv = generate_rsa_keypair()
-    save_private_key(priv, BASE / "ca" / "private.pem")
-    save_public_key(priv.public_key(), BASE / "ca" / "public.pem")
-    cert = {
-        "subject":    "CA-ROOT",
-        "issuer":     "SELF-SIGNED",
-        "serial":     "0001",
-        "valid_from": str(datetime.date.today()),
-        "valid_to":   str(datetime.date.today() + datetime.timedelta(days=3650)),
-        "public_key": priv.public_key().public_bytes(
-            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-        ).decode()
-    }
-    (BASE / "ca" / "ca_cert.json").write_text(json.dumps(cert, indent=2))
-    fp_h = hashes.Hash(hashes.SHA256(), backend=default_backend())
-    fp_h.update(cert["public_key"].encode())
-    fp = fp_h.finalize().hex()[:40]
-    print()
-    panel([
-        f"  Subject     : {cert['subject']}",
-        f"  Issuer      : {cert['issuer']}",
-        f"  Serial No   : {cert['serial']}",
-        "",
-        f"  Valid From  : {cert['valid_from']}",
-        f"  Valid To    : {cert['valid_to']}  (10 years)",
-        f"  Key Size    : RSA-2048",
-        f"  Signature   : SHA-256 with RSA",
-        "",
-        f"  Fingerprint : {fp}...",
-    ], border_color="byellow", title=" ◈ CA CERTIFICATE ", accent="byellow")
-
-def ra_validate():
-    section("REGISTRATION AUTHORITY — Validasi Pemohon", "◈", "bmagenta")
-    pending = [
-        u for u in ["cust1", "cust2", "cust3"]
-        if (BASE / u / "csr.json").exists() and not (BASE / u / "cert.json").exists()
-    ]
-    if not pending:
-        warn("Tidak ada CSR pending untuk divalidasi.")
-        return
-    for user in pending:
-        csr = json.loads((BASE / user / "csr.json").read_text())
-        print()
-        panel([
-            f"  Common Name : {csr.get('common_name', user)}",
-            f"  Email       : {csr.get('email', '-')}",
-            f"  Timestamp   : {csr.get('timestamp', '-')}",
-            "",
-            f"  Status      : MENUNGGU VALIDASI RA",
-        ], border_color="bmagenta", title=f" ◈ CSR DARI {user.upper()} ", accent="bmagenta")
-        approve = input(f"\n  {FG['bmagenta']}Setujui CSR {FG['bcyan'] + BOLD}{user.upper()}{RESET}{FG['bmagenta']}?{RESET} (y/N): {FG['bcyan']}").strip().lower()
-        print(RESET, end="")
-        if approve == "y":
-            csr["ra_approved"]  = True
-            csr["ra_timestamp"] = str(datetime.datetime.now())
-            (BASE / user / "csr_approved.json").write_text(json.dumps(csr, indent=2))
-            spinner_fancy(f"Memforward CSR {user.upper()} ke CA", 0.9)
-            ok(f"CSR {user.upper()} disetujui RA → diteruskan ke CA")
-        else:
-            warn(f"CSR {user.upper()} ditolak.")
-
-def ca_certify():
-    section("CERTIFICATE AUTHORITY — Penerbitan Sertifikat", "◈", "byellow")
-    if not (BASE / "ca" / "private.pem").exists():
-        err("CA belum diinisialisasi! Jalankan menu [1] terlebih dahulu.")
-        return
-    ca_priv   = load_private_key(BASE / "ca" / "private.pem")
-    certified = []
-    for user in ["cust1", "cust2", "cust3"]:
-        approved_path = BASE / user / "csr_approved.json"
-        cert_path     = BASE / user / "cert.json"
-        pub_path      = BASE / user / "public.pem"
-        if approved_path.exists() and not cert_path.exists() and pub_path.exists():
-            spinner_fancy(f"Mensertifikasi public key {user.upper()}", 1.3)
-            csr         = json.loads(approved_path.read_text())
-            pub_key_pem = pub_path.read_bytes()
-            sig = ca_priv.sign(
-                pub_key_pem,
-                padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
-                hashes.SHA256()
-            )
-            cert = {
-                "subject":      user.upper(),
-                "issuer":       "CA-ROOT",
-                "serial":       f"{hash(user) % 9999:04d}",
-                "valid_from":   str(datetime.date.today()),
-                "valid_to":     str(datetime.date.today() + datetime.timedelta(days=365)),
-                "public_key":   pub_key_pem.decode(),
-                "ca_signature": sig.hex(),
-                "common_name":  csr.get("common_name", user),
-                "email":        csr.get("email", "-"),
-            }
-            cert_path.write_text(json.dumps(cert, indent=2))
-            fp_h = hashes.Hash(hashes.SHA256(), backend=default_backend())
-            fp_h.update(pub_key_pem)
-            fp = fp_h.finalize().hex()[:40]
-            print()
-            panel([
-                f"  Subject     : {cert['subject']}",
-                f"  Issuer      : {cert['issuer']}",
-                f"  Serial No   : {cert['serial']}",
-                "",
-                f"  Valid       : {cert['valid_from']} → {cert['valid_to']}",
-                f"  Common Name : {cert['common_name']}",
-                f"  Email       : {cert['email']}",
-                "",
-                f"  Fingerprint : {fp}...",
-            ], border_color="bgreen", title=f" ◈ CERT ISSUED: {user.upper()} ", accent="bgreen")
-            certified.append(user)
-    if not certified:
-        warn("Tidak ada CSR yang sudah disetujui RA dan menunggu sertifikasi.")
-
-def cust_register():
-    section("CUST — Pendaftaran & Pembuatan Key Pair", "◈", "bcyan")
-    info(f"User tersedia: {FG['bcyan'] + BOLD}cust1{RESET}  {FG['bcyan'] + BOLD}cust2{RESET}  {FG['bcyan'] + BOLD}cust3{RESET}")
-    user = input(f"\n  {FG['bcyan']}Masukkan nama user:{RESET} {FG['bcyan']}").strip().lower()
-    print(RESET, end="")
-    if user not in ["cust1", "cust2", "cust3"]:
-        err("User tidak valid.")
-        return
-    ensure_dirs(user)
-    if (BASE / user / "private.pem").exists():
-        warn(f"{user.upper()} sudah memiliki keypair.")
-        if input(f"  {FG['byellow']}Buat ulang? (y/N):{RESET} {FG['bcyan']}").strip().lower() != "y":
-            print(RESET, end="")
-            return
-        print(RESET, end="")
-    spinner_fancy(f"Generating RSA-2048 keypair untuk {user.upper()}", 1.6)
-    priv  = generate_rsa_keypair()
-    save_private_key(priv, BASE / user / "private.pem")
-    save_public_key(priv.public_key(), BASE / user / "public.pem")
-    cn    = input(f"  {FG['bcyan']}Common Name (nama lengkap):{RESET} {FG['bwhite']}").strip() or user
-    print(RESET, end="")
-    email = input(f"  {FG['bcyan']}Email:{RESET} {FG['bwhite']}").strip() or f"{user}@pki.local"
-    print(RESET, end="")
-    csr   = {
-        "common_name": cn, "email": email,
-        "timestamp":   str(datetime.datetime.now()),
-        "public_key":  priv.public_key().public_bytes(
-            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-        ).decode()
-    }
-    (BASE / user / "csr.json").write_text(json.dumps(csr, indent=2))
-    print()
-    panel([
-        f"  User        : {user.upper()}",
-        f"  Common Name : {cn}",
-        f"  Email       : {email}",
-        f"  Key Size    : RSA-2048",
-        "",
-        f"  CSR Status  : DIKIRIM KE RA →",
-    ], border_color="bcyan", title=" ◈ KEYPAIR GENERATED ", accent="bcyan")
-
-def cust_sign():
-    section("CUST — Buat Tanda Tangan Digital", "◈", "bcyan")
-    user = input(f"  {FG['bcyan']}Pengirim (user):{RESET} {FG['bcyan']}").strip().lower()
-    print(RESET, end="")
-    if not (BASE / user / "private.pem").exists():
-        err("Keypair tidak ditemukan.")
-        return
-    if not (BASE / user / "cert.json").exists():
-        err("Sertifikat belum diterbitkan CA.")
-        return
-    msg  = input(f"  {FG['bcyan']}Pesan yang akan ditandatangani:{RESET} {FG['bwhite']}").strip()
-    print(RESET, end="")
-    spinner_fancy("Menghitung tanda tangan PSS-SHA256", 1.2)
-    priv = load_private_key(BASE / user / "private.pem")
-    sig  = priv.sign(msg.encode(), padding.PSS(
-        mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH
+def sign_data(private_key, data: bytes) -> bytes:
+    return private_key.sign(data, padding.PSS(
+        mgf=padding.MGF1(hashes.SHA256()),
+        salt_length=padding.PSS.MAX_LENGTH
     ), hashes.SHA256())
-    out  = {"sender": user, "message": msg, "signature": sig.hex(), "timestamp": str(datetime.datetime.now())}
-    fname = BASE / user / f"signed_{int(time.time())}.json"
-    fname.write_text(json.dumps(out, indent=2))
-    print()
-    ok("Tanda tangan digital berhasil dibuat!")
-    info(f"Disimpan   : {FG['bcyan']}{fname}{RESET}")
-    info(f"Sig (hex)  : {FG['byellow']}{sig.hex()[:64]}…{RESET}")
 
-def cust_encrypt():
-    section("CUST — Enkripsi Pesan Rahasia", "◈", "bgreen")
-    sender   = input(f"  {FG['bcyan']}Pengirim:{RESET} {FG['bcyan']}").strip().lower()
-    print(RESET, end="")
-    receiver = input(f"  {FG['bcyan']}Penerima:{RESET} {FG['bcyan']}").strip().lower()
-    print(RESET, end="")
-    if not (BASE / sender / "private.pem").exists():
-        err(f"Private key {sender} tidak ditemukan.")
-        return
-    if not (BASE / receiver / "cert.json").exists():
-        err(f"Sertifikat {receiver} tidak ditemukan.")
-        return
-    msg = input(f"  {FG['bcyan']}Pesan rahasia:{RESET} {FG['bwhite']}").strip()
-    print(RESET, end="")
-    spinner_fancy("Mengenkripsi dengan RSA-OAEP + Digital Signature", 1.6)
-    cert_r     = json.loads((BASE / receiver / "cert.json").read_text())
-    pub_r      = serialization.load_pem_public_key(cert_r["public_key"].encode(), backend=default_backend())
-    ciphertext = pub_r.encrypt(msg.encode(), padding.OAEP(
-        mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None
-    ))
-    priv_s = load_private_key(BASE / sender / "private.pem")
-    sig    = priv_s.sign(msg.encode(), padding.PSS(
-        mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH
-    ), hashes.SHA256())
-    out   = {
-        "from": sender, "to": receiver,
-        "ciphertext": ciphertext.hex(), "signature": sig.hex(),
-        "timestamp":  str(datetime.datetime.now())
-    }
-    fname = BASE / receiver / f"msg_from_{sender}_{int(time.time())}.json"
-    fname.write_text(json.dumps(out, indent=2))
-    print()
-    panel([
-        f"  From        : {sender.upper()}",
-        f"  To          : {receiver.upper()}",
-        f"  Encryption  : RSA-OAEP (SHA-256)",
-        f"  Signature   : RSA-PSS (SHA-256)",
-        "",
-        f"  Ciphertext  : {ciphertext.hex()[:48]}…",
-    ], border_color="bgreen", title=" ◈ ENCRYPTED & SIGNED ", accent="bgreen")
-
-def cust_decrypt():
-    section("CUST — Dekripsi Pesan Rahasia", "◈", "bcyan")
-    receiver = input(f"  {FG['bcyan']}Penerima (user kamu):{RESET} {FG['bcyan']}").strip().lower()
-    print(RESET, end="")
-    if not (BASE / receiver / "private.pem").exists():
-        err("Private key tidak ditemukan.")
-        return
-    msgs = list((BASE / receiver).glob("msg_from_*.json"))
-    if not msgs:
-        warn("Tidak ada pesan masuk.")
-        return
-    print(f"\n  {FG['bwhite'] + BOLD}Pesan masuk{RESET}  {FG['bblack'] + DIM}({len(msgs)} pesan){RESET}")
-    divider(50, "bblue")
-    for i, m in enumerate(msgs):
-        data = json.loads(m.read_text())
-        ts   = data.get("timestamp", "")[:16]
-        print(f"  {FG['bgreen'] + BOLD}[{i}]{RESET}  {FG['bcyan']}{m.name}{RESET}  {FG['bblack'] + DIM}{ts}{RESET}")
-    divider(50, "bblue")
-    idx  = int(input(f"\n  {FG['bcyan']}Pilih nomor pesan:{RESET} {FG['bcyan']}"))
-    print(RESET, end="")
-    data = json.loads(msgs[idx].read_text())
-    spinner_fancy("Mendekripsi dengan RSA-OAEP private key", 1.4)
-    priv_r = load_private_key(BASE / receiver / "private.pem")
+def verify_sig(public_key, data: bytes, signature: bytes) -> bool:
     try:
-        plaintext = priv_r.decrypt(bytes.fromhex(data["ciphertext"]), padding.OAEP(
-            mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None
-        ))
-        ok("Dekripsi berhasil!")
-        sender = data["from"]
-        if (BASE / sender / "cert.json").exists():
-            spinner_fancy(f"Memverifikasi tanda tangan {sender.upper()}", 1.0)
-            cert_s = json.loads((BASE / sender / "cert.json").read_text())
-            pub_s  = serialization.load_pem_public_key(cert_s["public_key"].encode(), backend=default_backend())
-            try:
-                pub_s.verify(bytes.fromhex(data["signature"]), plaintext, padding.PSS(
-                    mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH
-                ), hashes.SHA256())
-                ok(f"Tanda tangan {sender.upper()} VALID ✓")
-            except InvalidSignature:
-                err(f"Tanda tangan {sender.upper()} TIDAK VALID!")
-        print()
-        panel([
-            f"  From        : {data['from'].upper()}",
-            f"  To          : {receiver.upper()}",
-            f"  Timestamp   : {data['timestamp']}",
-            "",
-            f"  Plaintext   : {plaintext.decode()}",
-        ], border_color="bgreen", title=" ◈ MESSAGE DECRYPTED ", accent="bgreen")
-    except Exception as e:
-        err(f"Dekripsi gagal: {e}")
-
-def cust_verify():
-    section("CUST — Verifikasi Tanda Tangan Digital", "◈", "bcyan")
-    user   = input(f"  {FG['bcyan']}User yang memverifikasi:{RESET} {FG['bcyan']}").strip().lower()
-    print(RESET, end="")
-    signer = input(f"  {FG['bcyan']}User yang menandatangani:{RESET} {FG['bcyan']}").strip().lower()
-    print(RESET, end="")
-    if not (BASE / signer / "cert.json").exists():
-        err(f"Sertifikat {signer} tidak ditemukan.")
-        return
-    signed_files = list((BASE / signer).glob("signed_*.json"))
-    if not signed_files:
-        warn("Tidak ada file bertanda tangan.")
-        return
-    divider(50, "bblue")
-    for i, f in enumerate(signed_files):
-        data = json.loads(f.read_text())
-        ts   = data.get("timestamp", "")[:16]
-        print(f"  {FG['bgreen'] + BOLD}[{i}]{RESET}  {FG['bwhite']}{f.name}{RESET}  {FG['bblack'] + DIM}{ts}{RESET}")
-    divider(50, "bblue")
-    idx  = int(input(f"\n  {FG['bcyan']}Pilih file:{RESET} {FG['bcyan']}"))
-    print(RESET, end="")
-    data = json.loads(signed_files[idx].read_text())
-    spinner_fancy("Memverifikasi rantai sertifikat CA", 1.0)
-    cert_s  = json.loads((BASE / signer / "cert.json").read_text())
-    pub_s   = serialization.load_pem_public_key(cert_s["public_key"].encode(), backend=default_backend())
-    ca_cert = json.loads((BASE / "ca" / "ca_cert.json").read_text())
-    ca_pub  = serialization.load_pem_public_key(ca_cert["public_key"].encode(), backend=default_backend())
-    try:
-        ca_pub.verify(
-            bytes.fromhex(cert_s["ca_signature"]), cert_s["public_key"].encode(),
-            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
-            hashes.SHA256()
-        )
-        ok(f"Sertifikat {signer.upper()} valid — ditandatangani CA ✓")
-    except InvalidSignature:
-        err("Sertifikat tidak valid! Chain of trust GAGAL.")
-        return
-    spinner_fancy(f"Memverifikasi tanda tangan {signer.upper()}", 1.0)
-    try:
-        pub_s.verify(
-            bytes.fromhex(data["signature"]), data["message"].encode(),
-            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
-            hashes.SHA256()
-        )
-        print()
-        panel([
-            f"  Pesan       : {data['message']}",
-            f"  Pengirim    : {signer.upper()}  (cert valid ✓)",
-            f"  Verifikator : {user.upper()}",
-            f"  Timestamp   : {data['timestamp']}",
-            "",
-            f"  Signature   : VALID ✓",
-        ], border_color="bgreen", title=" ◈ SIGNATURE VERIFIED ", accent="bgreen")
-    except InvalidSignature:
-        print()
-        panel([
-            f"  Pesan       : {data['message']}",
-            f"  Pengirim    : {signer.upper()}",
-            "",
-            f"  PESAN MUNGKIN TELAH DIMANIPULASI!",
-            f"  Chain of Trust : BROKEN",
-        ], border_color="bred", title=" ◈ SIGNATURE INVALID ✗ ", accent="bred")
-
-def negative_test():
-    section("NEGATIVE TEST — Simulasi Serangan", "⚠", "bred")
-    scenarios = [
-        ("1", "Man-in-the-Middle", "Pesan dimanipulasi, tanda tangan dipalsukan"),
-        ("2", "Wrong Key Attack",  "Dekripsi dengan private key yang salah"),
-        ("3", "Forged Certificate","Sertifikat dibuat tanpa private key CA"),
-    ]
-    print(f"  {FG['bred'] + BOLD}⚠  ATTACK SIMULATION LAB{RESET}")
-    print()
-    for key, name, desc in scenarios:
-        print(f"  {FG['bred'] + BOLD}[{key}]{RESET}  {FG['bwhite'] + BOLD}{name:<22}{RESET}  {FG['bblack'] + DIM}{desc}{RESET}")
-    print()
-    choice = input(f"  {FG['bcyan']}Pilih skenario (1/2/3):{RESET} {FG['bcyan']}").strip()
-    print(RESET + "")
-    if choice == "1":
-        spinner_fancy("Mensimulasikan MITM attack…", 1.3)
-        for user in ["cust1", "cust2"]:
-            if (BASE / user / "cert.json").exists():
-                cert     = json.loads((BASE / user / "cert.json").read_text())
-                pub      = serialization.load_pem_public_key(cert["public_key"].encode(), backend=default_backend())
-                fake_sig = os.urandom(256)
-                try:
-                    pub.verify(fake_sig, b"PESAN PALSU", padding.PSS(
-                        mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH
-                    ), hashes.SHA256())
-                except InvalidSignature:
-                    print()
-                    panel([
-                        f"  Target      : {user.upper()}",
-                        f"  Fake Sig    : os.urandom(256)",
-                        f"  Result      : InvalidSignature",
-                        "",
-                        f"  Reason      : Sig tidak cocok public key CA",
-                        f"  VERDICT     : ATTACK BLOCKED ✓",
-                    ], border_color="bred", title=" ⚠ MITM — NEUTRALIZED ", accent="bred")
-                break
-    elif choice == "2":
-        spinner_fancy("Mensimulasikan wrong-key decryption", 1.1)
-        for user in ["cust1", "cust2"]:
-            if (BASE / user / "cert.json").exists():
-                cert  = json.loads((BASE / user / "cert.json").read_text())
-                pub   = serialization.load_pem_public_key(cert["public_key"].encode(), backend=default_backend())
-                ct    = pub.encrypt(b"PESAN RAHASIA", padding.OAEP(
-                    mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None
-                ))
-                wrong = generate_rsa_keypair()
-                try:
-                    wrong.decrypt(ct, padding.OAEP(
-                        mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None
-                    ))
-                except Exception:
-                    print()
-                    panel([
-                        f"  Target      : {user.upper()}",
-                        f"  Attacker    : random RSA-2048 key",
-                        f"  Result      : ValueError — REJECTED",
-                        "",
-                        f"  Reason      : Hanya private key asli yang bisa dekripsi",
-                        f"  VERDICT     : ATTACK BLOCKED ✓",
-                    ], border_color="bred", title=" ⚠ WRONG KEY — NEUTRALIZED ", accent="bred")
-                break
-    elif choice == "3":
-        spinner_fancy("Mensimulasikan certificate forgery", 1.1)
-        fake_priv = generate_rsa_keypair()
-        fake_sig  = fake_priv.sign(b"fakepubkey", padding.PSS(
-            mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH
+        public_key.verify(signature, data, padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH
         ), hashes.SHA256())
-        if (BASE / "ca" / "ca_cert.json").exists():
-            ca_cert = json.loads((BASE / "ca" / "ca_cert.json").read_text())
-            ca_pub  = serialization.load_pem_public_key(ca_cert["public_key"].encode(), backend=default_backend())
-            try:
-                ca_pub.verify(fake_sig, b"fakepubkey", padding.PSS(
-                    mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH
-                ), hashes.SHA256())
-            except InvalidSignature:
-                print()
-                panel([
-                    f"  Attacker    : own RSA-2048 keypair",
-                    f"  Attempted   : sign cert without CA private key",
-                    f"  Result      : InvalidSignature",
-                    "",
-                    f"  Reason      : Hanya CA-ROOT yang bisa terbitkan cert",
-                    f"  VERDICT     : ATTACK BLOCKED ✓",
-                ], border_color="bred", title=" ⚠ FORGE CERT — NEUTRALIZED ", accent="bred")
+        return True
+    except InvalidSignature:
+        return False
+
+def encrypt_msg(public_key, message: bytes) -> bytes:
+    return public_key.encrypt(message, padding.OAEP(
+        mgf=padding.MGF1(hashes.SHA256()),
+        algorithm=hashes.SHA256(),
+        label=None
+    ))
+
+def decrypt_msg(private_key, ciphertext: bytes) -> bytes:
+    return private_key.decrypt(ciphertext, padding.OAEP(
+        mgf=padding.MGF1(hashes.SHA256()),
+        algorithm=hashes.SHA256(),
+        label=None
+    ))
+
+def get_pki_status():
+    st = {}
+    st["ca_ready"]    = (KEYS_DIR / "ca_private.pem").exists() and (KEYS_DIR / "ca_public.pem").exists()
+    st["cust1_key"]   = (KEYS_DIR / "cust1_public.pem").exists()
+    st["cust2_key"]   = (KEYS_DIR / "cust2_public.pem").exists()
+    st["cust3_key"]   = (KEYS_DIR / "cust3_public.pem").exists()
+    st["cust1_cert"]  = (CERTS_DIR / "cust1_cert.json").exists()
+    st["cust2_cert"]  = (CERTS_DIR / "cust2_cert.json").exists()
+    st["cust1_csr"]   = (KEYS_DIR / "cust1_csr.json").exists()
+    st["cust2_csr"]   = (KEYS_DIR / "cust2_csr.json").exists()
+    st["msg_c1c2"]    = (MSGS_DIR / "cust1_to_cust2.json").exists()
+    st["announce"]    = (MSGS_DIR / "cust2_announcement.json").exists()
+    return st
+
+def draw_main_menu():
+    clr()
+    st = get_pki_status()
+    now = datetime.datetime.now().strftime("%Y-%m-%d  %H:%M:%S")
+
+    print()
+    print(f"{C.GREEN}╔{'═' * W}╗{C.RESET}")
+
+    title_line = "SISTEM PKI — UAS Kriptografi Semester 4"
+    t_pad = (W - len(title_line)) // 2
+    t_content = " " * t_pad + f"{C.BOLD}{C.GREEN}{title_line}{C.RESET}" + " " * (W - t_pad - len(title_line))
+    print(f"{C.GREEN}║{C.RESET}{t_content}{C.GREEN}║{C.RESET}")
+
+    sub = "RSA-2048 · PSS Signature · OAEP Encryption · SHA-256"
+    s_pad = (W - len(sub)) // 2
+    s_content = " " * s_pad + f"{C.GRAY}{sub}{C.RESET}" + " " * (W - s_pad - len(sub))
+    print(f"{C.GREEN}║{C.RESET}{s_content}{C.GREEN}║{C.RESET}")
+    print(f"{C.GREEN}╠{'═' * W}╣{C.RESET}")
+
+    ts_content = f"  {C.GRAY}⏱  {now}{C.RESET}" + " " * (W - 2 - 3 - len(now) - 3)
+    print(f"{C.GREEN}║{C.RESET}{ts_content}{C.GREEN}║{C.RESET}")
+    print(f"{C.GREEN}╠{'═' * W}╣{C.RESET}")
+
+    entries = [
+        ("1", "CA", "Inisialisasi Key Pair CA",         C.YELLOW,  "ca_ready"),
+        ("2", "CA", "Terbitkan Sertifikat",              C.YELLOW,  "cust1_cert"),
+        ("3", "RA", "Validasi & Setujui Request Cust",   C.MAGENTA, "cust1_csr"),
+        ("4", "CUST", "Daftar & Buat Key Pair",          C.CYAN,    "cust1_key"),
+        ("5", "CUST", "Tanda Tangan Digital",            C.CYAN,    "announce"),
+        ("6", "CUST", "Enkripsi Pesan Rahasia",          C.CYAN,    "msg_c1c2"),
+        ("7", "CUST", "Dekripsi Pesan Rahasia",          C.CYAN,    None),
+        ("8", "CUST", "Verifikasi Tanda Tangan",         C.CYAN,    None),
+        ("9", "TEST", "Negative Test (Simulasi Serangan)", C.RED,   None),
+        ("0", "INFO", "Status Sistem PKI",               C.BLUE,    None),
+    ]
+
+    for num, role, desc, rc, status_key in entries:
+        dot = f"{C.GREEN}●{C.RESET}" if (status_key and st.get(status_key)) else f"{C.GRAY}○{C.RESET}"
+        role_str = f"{rc}{C.BOLD}{role:<5}{C.RESET}"
+        num_str  = f"{C.BOLD}{C.WHITE}{num}{C.RESET}"
+        sep      = f"{C.GRAY}│{C.RESET}"
+        desc_str = f"{C.WHITE}{desc}{C.RESET}"
+        row_text = f"  [{num_str}] {dot} {role_str} {sep} {desc_str}"
+        visible  = f"  [{num}] {('●' if (status_key and st.get(status_key)) else '○')} {role:<5} | {desc}"
+        pad = max(0, W - len(visible))
+        print(f"{C.GREEN}║{C.RESET}{row_text}{' ' * pad}{C.GREEN}║{C.RESET}")
+
+    print(f"{C.GREEN}╠{'═' * W}╣{C.RESET}")
+    q_text  = f"  [{C.BOLD}{C.WHITE}q{C.RESET}]   {C.RED}Keluar dari sistem{C.RESET}"
+    q_vis   = f"  [q]   Keluar dari sistem"
+    q_pad   = max(0, W - len(q_vis))
+    print(f"{C.GREEN}║{C.RESET}{q_text}{' ' * q_pad}{C.GREEN}║{C.RESET}")
+    print(f"{C.GREEN}╚{'═' * W}╝{C.RESET}")
+    print()
+    return input(f"  {C.BOLD}{C.CYAN}⌨  Pilih menu{C.RESET} {C.GRAY}»{C.RESET} ").strip().lower()
+
+def menu_ca_init():
+    if not check_crypto(): return
+    section_header("INISIALISASI KEY PAIR CA", "Certificate Authority — RSA 2048-bit", "CA", C.YELLOW)
+    if (KEYS_DIR / "ca_private.pem").exists():
+        status_warn("Key pair CA sudah ada.")
+        print()
+        regen = input(f"  {C.YELLOW}Generate ulang? (y/N){C.RESET} ").strip().lower()
+        if regen != 'y':
+            pause()
+            return
+    print()
+    spinner("Generating RSA 2048-bit key pair", 1.2)
+    ca_key = gen_rsa_keypair()
+    save_private_key(ca_key, KEYS_DIR / "ca_private.pem")
+    save_public_key(ca_key.public_key(), KEYS_DIR / "ca_public.pem")
+    print()
+    status_ok("CA Private Key  →  keys/ca_private.pem")
+    status_ok("CA Public Key   →  keys/ca_public.pem")
+    print()
+    pub_pem = (KEYS_DIR / "ca_public.pem").read_text()
+    fingerprint = pub_pem[27:67].replace("\n", "")
+    print(f"  {C.GRAY}Fingerprint: {C.GREEN}{fingerprint}...{C.RESET}")
+    pause()
+
+def menu_ca_certify():
+    if not check_crypto(): return
+    section_header("TERBITKAN SERTIFIKAT DIGITAL", "Certify Public Key dari User", "CA", C.YELLOW)
+    if not (KEYS_DIR / "ca_private.pem").exists():
+        status_err("Key pair CA belum ada! Jalankan menu [1] dulu.")
+        pause()
+        return
+    users = []
+    for f in KEYS_DIR.glob("*_csr.json"):
+        uname = f.stem.replace("_csr", "")
+        approved = json.loads(f.read_text()).get("ra_approved", False)
+        if approved and not (CERTS_DIR / f"{uname}_cert.json").exists():
+            users.append(uname)
+    if not users:
+        status_warn("Tidak ada CSR yang sudah diapprove RA dan belum disertifikasi.")
+        pause()
+        return
+    print(f"  {C.CYAN}CSR menunggu sertifikasi:{C.RESET}")
+    for i, u in enumerate(users):
+        print(f"    {C.WHITE}[{i+1}]{C.RESET}  {C.YELLOW}{u}{C.RESET}")
+    print()
+    choice = input(f"  {C.CYAN}Pilih user (nama/nomor){C.RESET} {C.GRAY}»{C.RESET} ").strip()
+    if choice.isdigit():
+        idx = int(choice) - 1
+        if 0 <= idx < len(users):
+            target = users[idx]
+        else:
+            status_err("Pilihan tidak valid.")
+            pause()
+            return
+    elif choice in users:
+        target = choice
     else:
-        warn("Pilihan tidak valid.")
-
-def pki_status():
-    section("STATUS & INFO SISTEM PKI", "◈", "bblue")
-    entities = ["ca", "cust1", "cust2", "cust3"]
-    header = (
-        f"  {FG['bwhite'] + BOLD}{'Entity':<8}  {'KeyPair':<9}  {'CSR':<6}  {'Approved':<10}  {'Cert':<8}  {'Messages'}{RESET}"
-    )
-    divider(64, "bblue")
-    print(header)
-    divider(64, "bblue")
-    for e in entities:
-        d        = BASE / e
-        has_kp   = (d / "private.pem").exists() and (d / "public.pem").exists()
-        has_csr  = (d / "csr.json").exists() if e != "ca" else False
-        has_app  = (d / "csr_approved.json").exists() if e != "ca" else False
-        has_cert = (d / ("ca_cert.json" if e == "ca" else "cert.json")).exists()
-        msgs     = len(list(d.glob("msg_from_*.json"))) if e != "ca" else 0
-
-        def sym(flag, na=False):
-            if na:  return f"{FG['bblack'] + DIM} N/A {RESET}"
-            return f"{FG['bgreen'] + BOLD} ✓  {RESET}" if flag else f"{FG['bred'] + DIM} ✗  {RESET}"
-
-        label  = f"{FG['bcyan'] + BOLD}{e.upper():<8}{RESET}"
-        msg_s  = f"{FG['byellow']}{msgs} msg{RESET}" if msgs else f"{FG['bblack'] + DIM}none{RESET}"
-        print(
-            f"  {label}  {sym(has_kp)}      {sym(has_csr, e=='ca')}    "
-            f"{sym(has_app, e=='ca')}        {sym(has_cert)}      {msg_s}"
-        )
-    divider(64, "bblue")
-    total_msgs  = len(list(BASE.glob("*/msg_from_*.json")))
-    total_signs = len(list(BASE.glob("*/signed_*.json")))
+        status_err(f"User '{choice}' tidak ditemukan.")
+        pause()
+        return
     print()
-    info(f"Pesan terenkripsi  : {FG['byellow'] + BOLD}{total_msgs}{RESET}")
-    info(f"File ditandatangani: {FG['byellow'] + BOLD}{total_signs}{RESET}")
+    spinner(f"Memverifikasi CSR {target}", 0.6)
+    csr_data = json.loads((KEYS_DIR / f"{target}_csr.json").read_text())
+    pub_pem  = csr_data["public_key_pem"]
+    ca_key   = load_private_key(KEYS_DIR / "ca_private.pem")
+    issued   = datetime.datetime.now().isoformat()
+    cert_payload = json.dumps({
+        "subject": target,
+        "issued_at": issued,
+        "public_key_pem": pub_pem,
+        "issuer": "CA-PKI-UAS-Kriptografi"
+    }, sort_keys=True).encode()
+    spinner(f"Menandatangani sertifikat dengan CA Private Key", 0.8)
+    sig = sign_data(ca_key, cert_payload)
+    cert = {
+        "subject": target,
+        "issued_at": issued,
+        "public_key_pem": pub_pem,
+        "issuer": "CA-PKI-UAS-Kriptografi",
+        "signature": base64.b64encode(sig).decode()
+    }
+    cert_path = CERTS_DIR / f"{target}_cert.json"
+    cert_path.write_text(json.dumps(cert, indent=2))
+    pub_path = KEYS_DIR / f"{target}_public.pem"
+    pub_path.write_text(pub_pem)
     print()
-    panel([
-        "  ALGORITMA YANG DIGUNAKAN",
+    status_ok(f"Sertifikat diterbitkan  →  certs/{target}_cert.json")
+    status_ok(f"Public key disimpan     →  keys/{target}_public.pem")
+    print()
+    print(f"  {C.GRAY}Subject : {C.WHITE}{target}{C.RESET}")
+    print(f"  {C.GRAY}Issued  : {C.WHITE}{issued[:19]}{C.RESET}")
+    print(f"  {C.GRAY}Issuer  : {C.GREEN}CA-PKI-UAS-Kriptografi{C.RESET}")
+    pause()
+
+def menu_ra_validate():
+    if not check_crypto(): return
+    section_header("VALIDASI REQUEST SERTIFIKAT", "Registration Authority — Pemeriksaan CSR", "RA", C.MAGENTA)
+    pending = []
+    for f in KEYS_DIR.glob("*_csr.json"):
+        data = json.loads(f.read_text())
+        if not data.get("ra_approved", False):
+            pending.append((f.stem.replace("_csr",""), data))
+    if not pending:
+        status_warn("Tidak ada CSR baru yang perlu divalidasi.")
+        pause()
+        return
+    for uname, data in pending:
+        print(f"  {C.YELLOW}{'─' * 50}{C.RESET}")
+        print(f"  {C.BOLD}{C.WHITE}User     :{C.RESET}  {C.CYAN}{uname}{C.RESET}")
+        print(f"  {C.BOLD}{C.WHITE}Email    :{C.RESET}  {data.get('email', '-')}")
+        print(f"  {C.BOLD}{C.WHITE}Org      :{C.RESET}  {data.get('org', '-')}")
+        print(f"  {C.BOLD}{C.WHITE}Dibuat   :{C.RESET}  {data.get('created_at', '-')[:19]}")
+        print(f"  {C.BOLD}{C.WHITE}PubKey   :{C.RESET}  {C.GRAY}...{data['public_key_pem'][30:70]}...{C.RESET}")
+        print()
+        ans = input(f"  {C.MAGENTA}Setujui CSR dari {uname}? (y/N){C.RESET} ").strip().lower()
+        if ans == 'y':
+            data["ra_approved"] = True
+            data["ra_approved_at"] = datetime.datetime.now().isoformat()
+            (KEYS_DIR / f"{uname}_csr.json").write_text(json.dumps(data, indent=2))
+            status_ok(f"CSR {uname} DISETUJUI — diteruskan ke CA")
+        else:
+            status_warn(f"CSR {uname} DITOLAK")
+        print()
+    pause()
+
+def menu_cust_keygen():
+    if not check_crypto(): return
+    section_header("DAFTAR & BUAT KEY PAIR", "Customer — Generate RSA Key + Kirim CSR ke RA", "CUST", C.CYAN)
+    users = ["cust1", "cust2", "cust3"]
+    print(f"  {C.CYAN}Pilih user:{C.RESET}")
+    for i, u in enumerate(users):
+        cert_exists = (CERTS_DIR / f"{u}_cert.json").exists()
+        key_exists  = (KEYS_DIR / f"{u}_private.pem").exists()
+        mark = f"{C.GREEN}[CERT ✔]{C.RESET}" if cert_exists else (f"{C.YELLOW}[KEY ✔]{C.RESET}" if key_exists else f"{C.GRAY}[─]{C.RESET}")
+        print(f"    {C.WHITE}[{i+1}]{C.RESET}  {C.CYAN}{u:<8}{C.RESET}  {mark}")
+    print()
+    choice = input(f"  {C.CYAN}Pilih (1-3){C.RESET} {C.GRAY}»{C.RESET} ").strip()
+    if choice not in ["1","2","3"]:
+        status_err("Pilihan tidak valid.")
+        pause()
+        return
+    target = users[int(choice)-1]
+    priv_path = KEYS_DIR / f"{target}_private.pem"
+    if priv_path.exists():
+        status_warn(f"Key pair {target} sudah ada.")
+        regen = input(f"  {C.YELLOW}Generate ulang? (y/N){C.RESET} ").strip().lower()
+        if regen != 'y':
+            pause()
+            return
+    print()
+    spinner(f"Generating RSA 2048-bit key pair untuk {target}", 1.0)
+    key = gen_rsa_keypair()
+    save_private_key(key, KEYS_DIR / f"{target}_private.pem")
+    pub_pem = key.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo
+    ).decode()
+    email = input(f"\n  {C.CYAN}Email {target}{C.RESET} {C.GRAY}»{C.RESET} ").strip() or f"{target}@pki.local"
+    org   = input(f"  {C.CYAN}Organisasi{C.RESET} {C.GRAY}»{C.RESET} ").strip() or "PKI UAS Kriptografi"
+    csr = {
+        "subject": target,
+        "email": email,
+        "org": org,
+        "created_at": datetime.datetime.now().isoformat(),
+        "public_key_pem": pub_pem,
+        "ra_approved": False
+    }
+    (KEYS_DIR / f"{target}_csr.json").write_text(json.dumps(csr, indent=2))
+    spinner("Mengirim CSR ke RA", 0.5)
+    print()
+    status_ok(f"Private Key  →  keys/{target}_private.pem")
+    status_ok(f"CSR dikirim  →  keys/{target}_csr.json")
+    status_info("Tunggu validasi dari RA, lalu CA akan menerbitkan sertifikat.")
+    pause()
+
+def menu_sign():
+    if not check_crypto(): return
+    section_header("TANDA TANGAN DIGITAL", "Buat & Tanda Tangani Pesan (Pengumuman Publik)", "CUST", C.CYAN)
+    signers = [u for u in ["cust1","cust2","cust3"] if (KEYS_DIR / f"{u}_private.pem").exists()]
+    if not signers:
+        status_err("Belum ada user dengan private key.")
+        pause()
+        return
+    print(f"  {C.CYAN}Pengirim tersedia:{C.RESET}")
+    for i, u in enumerate(signers):
+        print(f"    {C.WHITE}[{i+1}]{C.RESET}  {C.CYAN}{u}{C.RESET}")
+    print()
+    s_ch = input(f"  {C.CYAN}Pilih pengirim (1-{len(signers)}){C.RESET} {C.GRAY}»{C.RESET} ").strip()
+    if not s_ch.isdigit() or not (1 <= int(s_ch) <= len(signers)):
+        status_err("Pilihan tidak valid.")
+        pause()
+        return
+    sender = signers[int(s_ch)-1]
+    print()
+    msg = input(f"  {C.CYAN}Isi pengumuman{C.RESET} {C.GRAY}»{C.RESET} ").strip()
+    if not msg:
+        status_err("Pesan tidak boleh kosong.")
+        pause()
+        return
+    spinner("Menandatangani pesan", 0.8)
+    priv = load_private_key(KEYS_DIR / f"{sender}_private.pem")
+    sig  = sign_data(priv, msg.encode())
+    out  = {
+        "sender": sender,
+        "message": msg,
+        "signature": base64.b64encode(sig).decode(),
+        "created_at": datetime.datetime.now().isoformat()
+    }
+    out_path = MSGS_DIR / f"{sender}_announcement.json"
+    out_path.write_text(json.dumps(out, indent=2))
+    print()
+    status_ok(f"Pengumuman tersimpan  →  messages/{sender}_announcement.json")
+    status_info("Semua user dapat membaca dan memverifikasi tanda tangan ini.")
+    pause()
+
+def menu_encrypt():
+    if not check_crypto(): return
+    section_header("ENKRIPSI PESAN RAHASIA", "Enkripsi + Tanda Tangan — Cust1 → Cust2", "CUST", C.CYAN)
+    if not (KEYS_DIR / "cust1_private.pem").exists():
+        status_err("Private key Cust1 belum ada.")
+        pause()
+        return
+    if not (CERTS_DIR / "cust2_cert.json").exists() and not (KEYS_DIR / "cust2_public.pem").exists():
+        status_err("Public key Cust2 belum tersedia.")
+        pause()
+        return
+    print()
+    msg = input(f"  {C.CYAN}Pesan rahasia untuk Cust2{C.RESET} {C.GRAY}»{C.RESET} ").strip()
+    if not msg:
+        status_err("Pesan tidak boleh kosong.")
+        pause()
+        return
+    spinner("Mengambil public key Cust2", 0.4)
+    if (CERTS_DIR / "cust2_cert.json").exists():
+        cert  = json.loads((CERTS_DIR / "cust2_cert.json").read_text())
+        pub2  = serialization.load_pem_public_key(cert["public_key_pem"].encode())
+    else:
+        pub2 = load_public_key(KEYS_DIR / "cust2_public.pem")
+    priv1 = load_private_key(KEYS_DIR / "cust1_private.pem")
+    spinner("Menandatangani pesan dengan Cust1 Private Key", 0.6)
+    sig = sign_data(priv1, msg.encode())
+    spinner("Mengenkripsi dengan Cust2 Public Key (RSA-OAEP)", 0.8)
+    ciphertext = encrypt_msg(pub2, msg.encode())
+    out = {
+        "sender": "cust1",
+        "recipient": "cust2",
+        "ciphertext": base64.b64encode(ciphertext).decode(),
+        "signature": base64.b64encode(sig).decode(),
+        "created_at": datetime.datetime.now().isoformat()
+    }
+    (MSGS_DIR / "cust1_to_cust2.json").write_text(json.dumps(out, indent=2))
+    print()
+    status_ok("Pesan terenkripsi  →  messages/cust1_to_cust2.json")
+    status_info(f"Ciphertext: {base64.b64encode(ciphertext).decode()[:48]}...")
+    status_info("Hanya Cust2 (dengan private key-nya) yang bisa membuka pesan ini.")
+    pause()
+
+def menu_decrypt():
+    if not check_crypto(): return
+    section_header("DEKRIPSI PESAN RAHASIA", "Buka Pesan Terenkripsi dari Cust1", "CUST", C.CYAN)
+    msg_file = MSGS_DIR / "cust1_to_cust2.json"
+    if not msg_file.exists():
+        status_err("Belum ada pesan terenkripsi dari Cust1.")
+        pause()
+        return
+    if not (KEYS_DIR / "cust2_private.pem").exists():
+        status_err("Private key Cust2 belum ada.")
+        pause()
+        return
+    data = json.loads(msg_file.read_text())
+    spinner("Mendekripsi dengan Cust2 Private Key", 0.8)
+    priv2 = load_private_key(KEYS_DIR / "cust2_private.pem")
+    try:
+        plaintext = decrypt_msg(priv2, base64.b64decode(data["ciphertext"]))
+        print()
+        print(f"  {C.GREEN}{'═' * 50}{C.RESET}")
+        print(f"  {C.BOLD}{C.WHITE}PESAN TERDEKRIPSI:{C.RESET}")
+        print(f"  {C.BOLD}{C.CYAN}  {plaintext.decode()}{C.RESET}")
+        print(f"  {C.GREEN}{'═' * 50}{C.RESET}")
+        print()
+        spinner("Memverifikasi tanda tangan Cust1", 0.6)
+        if (CERTS_DIR / "cust1_cert.json").exists():
+            cert = json.loads((CERTS_DIR / "cust1_cert.json").read_text())
+            pub1 = serialization.load_pem_public_key(cert["public_key_pem"].encode())
+        elif (KEYS_DIR / "cust1_public.pem").exists():
+            pub1 = load_public_key(KEYS_DIR / "cust1_public.pem")
+        else:
+            status_warn("Public key Cust1 tidak tersedia untuk verifikasi tanda tangan.")
+            pause()
+            return
+        ok = verify_sig(pub1, plaintext, base64.b64decode(data["signature"]))
+        print()
+        if ok:
+            status_ok("Tanda tangan Cust1 VALID ✔  — pesan asli, tidak dipalsukan")
+        else:
+            status_err("Tanda tangan Cust1 TIDAK VALID ✘")
+    except Exception as e:
+        print()
+        status_err(f"Dekripsi gagal: {e}")
+    pause()
+
+def menu_verify():
+    if not check_crypto(): return
+    section_header("VERIFIKASI TANDA TANGAN DIGITAL", "Verifikasi Pengumuman Publik", "CUST", C.CYAN)
+    announcements = list(MSGS_DIR.glob("*_announcement.json"))
+    if not announcements:
+        status_err("Belum ada pengumuman yang tersimpan.")
+        pause()
+        return
+    print(f"  {C.CYAN}Pengumuman tersedia:{C.RESET}")
+    for i, a in enumerate(announcements):
+        sender = json.loads(a.read_text()).get("sender","?")
+        print(f"    {C.WHITE}[{i+1}]{C.RESET}  {C.CYAN}{sender}{C.RESET}  {C.GRAY}({a.name}){C.RESET}")
+    print()
+    ch = input(f"  {C.CYAN}Pilih pengumuman{C.RESET} {C.GRAY}»{C.RESET} ").strip()
+    if not ch.isdigit() or not (1 <= int(ch) <= len(announcements)):
+        status_err("Pilihan tidak valid.")
+        pause()
+        return
+    ann_file = announcements[int(ch)-1]
+    ann = json.loads(ann_file.read_text())
+    sender = ann["sender"]
+    print()
+    print(f"  {C.BOLD}{C.WHITE}Pengirim :{C.RESET}  {C.CYAN}{sender}{C.RESET}")
+    print(f"  {C.BOLD}{C.WHITE}Pesan    :{C.RESET}  {C.WHITE}{ann['message']}{C.RESET}")
+    print(f"  {C.BOLD}{C.WHITE}Dibuat   :{C.RESET}  {C.GRAY}{ann['created_at'][:19]}{C.RESET}")
+    print()
+    if (CERTS_DIR / f"{sender}_cert.json").exists():
+        cert = json.loads((CERTS_DIR / f"{sender}_cert.json").read_text())
+        pub  = serialization.load_pem_public_key(cert["public_key_pem"].encode())
+        spinner("Verifikasi via sertifikat CA", 0.7)
+        source = "Sertifikat CA"
+    elif (KEYS_DIR / f"{sender}_public.pem").exists():
+        pub = load_public_key(KEYS_DIR / f"{sender}_public.pem")
+        spinner("Verifikasi via public key langsung", 0.7)
+        source = "Public Key"
+    else:
+        status_err(f"Public key / sertifikat {sender} tidak tersedia.")
+        pause()
+        return
+    ok = verify_sig(pub, ann["message"].encode(), base64.b64decode(ann["signature"]))
+    print()
+    if ok:
+        status_ok(f"Tanda tangan VALID ✔  (sumber: {source})")
+        status_info("Pesan ini benar-benar dari pengirim yang diklaim, tidak dimodifikasi.")
+    else:
+        status_err("Tanda tangan TIDAK VALID ✘  — pesan mungkin dipalsukan!")
+    pause()
+
+def menu_negative_test():
+    if not check_crypto(): return
+    section_header("NEGATIVE TEST — SIMULASI SERANGAN", "Uji Keamanan Sistem PKI", "TEST", C.RED)
+    print(f"  {C.RED}Simulasi serangan untuk membuktikan keamanan sistem:{C.RESET}")
+    print()
+
+    tests = [
+        ("Falsifikasi Tanda Tangan", "Memodifikasi pesan setelah ditandatangani"),
+        ("Penggunaan Key Palsu", "Verifikasi dengan public key yang salah"),
+        ("Replay Attack", "Mengirim ulang pesan lama"),
+    ]
+    for i, (name, desc) in enumerate(tests):
+        print(f"  {C.WHITE}[{i+1}]{C.RESET}  {C.RED}{name}{C.RESET}")
+        print(f"       {C.GRAY}{desc}{C.RESET}")
+    print(f"  {C.WHITE}[4]{C.RESET}  {C.ORANGE}Jalankan Semua Test{C.RESET}")
+    print()
+    ch = input(f"  {C.RED}Pilih test{C.RESET} {C.GRAY}»{C.RESET} ").strip()
+
+    print()
+    if ch in ["1", "4"]:
+        spinner("Test 1: Falsifikasi tanda tangan", 0.5)
+        key  = gen_rsa_keypair()
+        msg  = b"Pesan asli dari Cust1"
+        sig  = sign_data(key, msg)
+        tampered = b"Pesan dipalsukan oleh attacker!"
+        ok   = verify_sig(key.public_key(), tampered, sig)
+        if not ok:
+            status_ok("Test 1 LULUS ✔ — Tanda tangan tidak valid untuk pesan yang dimodifikasi")
+        else:
+            status_err("Test 1 GAGAL ✘")
+        print()
+
+    if ch in ["2", "4"]:
+        spinner("Test 2: Verifikasi dengan key palsu", 0.5)
+        key1 = gen_rsa_keypair()
+        key2 = gen_rsa_keypair()
+        msg  = b"Pesan dari Cust1"
+        sig  = sign_data(key1, msg)
+        ok   = verify_sig(key2.public_key(), msg, sig)
+        if not ok:
+            status_ok("Test 2 LULUS ✔ — Verifikasi dengan key berbeda gagal seperti yang diharapkan")
+        else:
+            status_err("Test 2 GAGAL ✘")
+        print()
+
+    if ch in ["3", "4"]:
+        spinner("Test 3: Replay attack (dekripsi dengan key salah)", 0.5)
+        key_legit   = gen_rsa_keypair()
+        key_attacker = gen_rsa_keypair()
+        msg = b"Pesan rahasia untuk Cust2"
+        ciphertext = encrypt_msg(key_legit.public_key(), msg)
+        try:
+            decrypt_msg(key_attacker, ciphertext)
+            status_err("Test 3 GAGAL ✘")
+        except Exception:
+            status_ok("Test 3 LULUS ✔ — Attacker tidak bisa mendekripsi tanpa private key yang benar")
+        print()
+
+    if ch not in ["1","2","3","4"]:
+        status_err("Pilihan tidak valid.")
+    pause()
+
+def menu_info():
+    section_header("STATUS SISTEM PKI", "Ringkasan komponen yang sudah diinisialisasi", "INFO", C.BLUE)
+    st = get_pki_status()
+
+    def row_status(label, ok, detail=""):
+        mark  = f"{C.GREEN}✔  AKTIF{C.RESET}  " if ok else f"{C.RED}✘  BELUM{C.RESET}  "
+        print(f"  {C.GRAY}{label:<22}{C.RESET}  {mark}{C.GRAY}{detail}{C.RESET}")
+
+    print(f"  {C.BOLD}{C.YELLOW}── Certificate Authority ──────────────────{C.RESET}")
+    row_status("CA Key Pair",    st["ca_ready"],   "keys/ca_private.pem + ca_public.pem")
+    print()
+    print(f"  {C.BOLD}{C.CYAN}── Customers ──────────────────────────────{C.RESET}")
+    row_status("Cust1 Key",      st["cust1_key"],  "keys/cust1_public.pem")
+    row_status("Cust2 Key",      st["cust2_key"],  "keys/cust2_public.pem")
+    row_status("Cust3 Key",      st["cust3_key"],  "keys/cust3_public.pem")
+    print()
+    print(f"  {C.BOLD}{C.MAGENTA}── Registration Authority ─────────────────{C.RESET}")
+    row_status("Cust1 CSR",      st["cust1_csr"],  "keys/cust1_csr.json")
+    row_status("Cust2 CSR",      st["cust2_csr"],  "keys/cust2_csr.json")
+    print()
+    print(f"  {C.BOLD}{C.YELLOW}── Sertifikat ─────────────────────────────{C.RESET}")
+    row_status("Cust1 Cert",     st["cust1_cert"], "certs/cust1_cert.json")
+    row_status("Cust2 Cert",     st["cust2_cert"], "certs/cust2_cert.json")
+    print()
+    print(f"  {C.BOLD}{C.GREEN}── Pesan ──────────────────────────────────{C.RESET}")
+    row_status("Cust1→Cust2",    st["msg_c1c2"],   "messages/cust1_to_cust2.json")
+    row_status("Pengumuman",     st["announce"],   "messages/*_announcement.json")
+    print()
+    done = sum(1 for v in st.values() if v)
+    total = len(st)
+    bar_filled = int((done/total) * 40)
+    bar = f"{C.GREEN}{'█' * bar_filled}{C.GRAY}{'░' * (40-bar_filled)}{C.RESET}"
+    print(f"  {C.BOLD}{C.WHITE}Progress PKI{C.RESET}  [{bar}] {C.YELLOW}{done}/{total}{C.RESET}")
+    pause()
+
+def boot_screen():
+    clr()
+    lines = [
         "",
-        "  Enkripsi   : RSA-OAEP (SHA-256, MGF1)",
-        "  Signature  : RSA-PSS (SHA-256, MAX_SALT)",
-        "  Key Size   : RSA-2048 bit",
-        "  Cert Format: JSON (simplified X.509)",
-        "  CA Model   : Hierarchical PKI (Root CA)",
-    ], border_color="bblue", title=" ◈ CRYPTO SPEC ", accent="bcyan")
+        f"  {C.GREEN}{'▓' * 58}{C.RESET}",
+        f"  {C.GREEN}{'▓' * 58}{C.RESET}",
+        f"",
+        f"  {C.BOLD}{C.GREEN}  ██████╗ ██╗  ██╗██╗{C.RESET}",
+        f"  {C.BOLD}{C.GREEN}  ██╔══██╗██║ ██╔╝██║{C.RESET}",
+        f"  {C.BOLD}{C.GREEN}  ██████╔╝█████╔╝ ██║{C.RESET}",
+        f"  {C.BOLD}{C.GREEN}  ██╔═══╝ ██╔═██╗ ██║{C.RESET}",
+        f"  {C.BOLD}{C.GREEN}  ██║     ██║  ██╗██║{C.RESET}",
+        f"  {C.BOLD}{C.GREEN}  ╚═╝     ╚═╝  ╚═╝╚═╝  {C.GRAY}Public Key Infrastructure{C.RESET}",
+        f"",
+        f"  {C.GRAY}Universitas — UAS Kriptografi Semester 4{C.RESET}",
+        f"  {C.GRAY}RSA-2048 · OAEP · PSS · SHA-256{C.RESET}",
+        f"",
+        f"  {C.GREEN}{'▓' * 58}{C.RESET}",
+        f"  {C.GREEN}{'▓' * 58}{C.RESET}",
+        "",
+    ]
+    for line in lines:
+        print(line)
+        time.sleep(0.04)
+    progress_bar("Initializing PKI Engine...", steps=25, delay=0.025)
+    time.sleep(0.3)
 
 def main():
-    BASE.mkdir(parents=True, exist_ok=True)
-    boot_sequence()
+    boot_screen()
     while True:
-        menu()
-        choice = sys.stdin.readline().strip().lower()
-        print(RESET)
-        if   choice == "1": ca_init()
-        elif choice == "2": ca_certify()
-        elif choice == "3": ra_validate()
-        elif choice == "4": cust_register()
-        elif choice == "5": cust_sign()
-        elif choice == "6": cust_encrypt()
-        elif choice == "7": cust_decrypt()
-        elif choice == "8": cust_verify()
-        elif choice == "9": negative_test()
-        elif choice == "0": pki_status()
+        choice = draw_main_menu()
+        actions = {
+            "1": menu_ca_init,
+            "2": menu_ca_certify,
+            "3": menu_ra_validate,
+            "4": menu_cust_keygen,
+            "5": menu_sign,
+            "6": menu_encrypt,
+            "7": menu_decrypt,
+            "8": menu_verify,
+            "9": menu_negative_test,
+            "0": menu_info,
+        }
+        if choice in actions:
+            actions[choice]()
         elif choice == "q":
+            clr()
             print()
-            print(f"  {FG['bblue'] + DIM}{'▄' * 72}{RESET}")
-            typewriter("  ◈  Terima kasih. PKI System offline.", 0.013, ["bcyan", "bblue", "bcyan", "bblue"])
-            typewriter("  ◈  Sampai jumpa!", 0.015, ["bblue", "bcyan"])
-            print(f"  {FG['bblue'] + DIM}{'▀' * 72}{RESET}")
-            print(RESET)
-            break
+            print(f"  {C.GREEN}Terima kasih telah menggunakan Sistem PKI.{C.RESET}")
+            print(f"  {C.GRAY}UAS Kriptografi Semester 4 — Keluar.{C.RESET}")
+            print()
+            sys.exit(0)
         else:
-            warn("Pilihan tidak valid.")
-        print()
-        input(f"  {FG['bblack'] + DIM}[ tekan Enter untuk kembali ke menu ] {RESET}")
+            pass
 
 if __name__ == "__main__":
     main()

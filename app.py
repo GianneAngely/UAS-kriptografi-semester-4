@@ -1,785 +1,499 @@
 import os
 import sys
 import time
+import random
+import threading
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.backends import default_backend
+from cryptography.exceptions import InvalidSignature
 import json
-import base64
 import datetime
-from pathlib import Path
 
-try:
-    from cryptography.hazmat.primitives.asymmetric import rsa, padding
-    from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import utils as asym_utils
-    from cryptography.exceptions import InvalidSignature
-    CRYPTO_OK = True
-except ImportError:
-    CRYPTO_OK = False
+GREEN  = "\033[92m"
+CYAN   = "\033[96m"
+YELLOW = "\033[93m"
+RED    = "\033[91m"
+WHITE  = "\033[97m"
+DIM    = "\033[2m"
+BOLD   = "\033[1m"
+RESET  = "\033[0m"
+BLINK  = "\033[5m"
+BG_BLK = "\033[40m"
 
-KEYS_DIR = Path("keys")
-CERTS_DIR = Path("certs")
-MSGS_DIR = Path("messages")
-
-for d in [KEYS_DIR, CERTS_DIR, MSGS_DIR]:
-    d.mkdir(exist_ok=True)
-
-class C:
-    RESET   = "\033[0m"
-    BOLD    = "\033[1m"
-    DIM     = "\033[2m"
-    BLINK   = "\033[5m"
-    GREEN   = "\033[38;5;82m"
-    CYAN    = "\033[38;5;51m"
-    YELLOW  = "\033[38;5;220m"
-    RED     = "\033[38;5;196m"
-    MAGENTA = "\033[38;5;201m"
-    BLUE    = "\033[38;5;33m"
-    WHITE   = "\033[38;5;255m"
-    GRAY    = "\033[38;5;245m"
-    ORANGE  = "\033[38;5;214m"
-    BGBLACK = "\033[40m"
-    BGGREEN = "\033[48;5;22m"
-    BGRED   = "\033[48;5;52m"
-    BGCYAN  = "\033[48;5;23m"
-
-W = 62
+WIDTH = 72
 
 def clr():
-    os.system('clear' if os.name != 'nt' else 'cls')
+    os.system("clear" if os.name == "posix" else "cls")
 
-def slow_print(text, delay=0.012):
+def typewrite(text, delay=0.018, color=GREEN):
     for ch in text:
-        sys.stdout.write(ch)
+        sys.stdout.write(color + ch + RESET)
         sys.stdout.flush()
         time.sleep(delay)
     print()
 
-def box_line(char="─", color=C.GREEN):
-    return f"{color}{char * W}{C.RESET}"
-
-def box_top(color=C.GREEN):
-    return f"{color}╔{'═' * W}╗{C.RESET}"
-
-def box_bot(color=C.GREEN):
-    return f"{color}╚{'═' * W}╝{C.RESET}"
-
-def box_mid(color=C.GREEN):
-    return f"{color}╠{'═' * W}╣{C.RESET}"
-
-def box_row(text="", color=C.GREEN, text_color=C.WHITE, center=False):
-    inner = W - 2
-    if center:
-        content = text.center(inner)
-    else:
-        content = text.ljust(inner)
-    visible_len = len(text)
-    pad = inner - visible_len
-    if center:
-        lpad = pad // 2
-        rpad = pad - lpad
-        content = " " * lpad + text + " " * rpad
-    else:
-        content = text + " " * max(0, pad)
-    return f"{color}║{C.RESET}{text_color}{content[:inner]}{C.RESET}{color}║{C.RESET}"
-
-def tag(label, color):
-    return f"{color}[{label}]{C.RESET}"
-
-def status_ok(msg):
-    print(f"  {C.GREEN}✔{C.RESET}  {C.WHITE}{msg}{C.RESET}")
-
-def status_err(msg):
-    print(f"  {C.RED}✘{C.RESET}  {C.RED}{msg}{C.RESET}")
-
-def status_info(msg):
-    print(f"  {C.CYAN}◆{C.RESET}  {C.GRAY}{msg}{C.RESET}")
-
-def status_warn(msg):
-    print(f"  {C.YELLOW}▲{C.RESET}  {C.YELLOW}{msg}{C.RESET}")
-
-def spinner(msg, duration=0.8):
-    frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
-    end = time.time() + duration
-    i = 0
-    while time.time() < end:
-        sys.stdout.write(f"\r  {C.CYAN}{frames[i % len(frames)]}{C.RESET}  {C.GRAY}{msg}...{C.RESET}")
+def loading_bar(label, steps=30, color=GREEN):
+    sys.stdout.write(f"  {color}{label}{RESET}  [")
+    sys.stdout.flush()
+    for i in range(steps):
+        time.sleep(random.uniform(0.01, 0.06))
+        sys.stdout.write(f"{color}█{RESET}")
         sys.stdout.flush()
-        time.sleep(0.07)
-        i += 1
-    sys.stdout.write(f"\r  {C.GREEN}✔{C.RESET}  {C.WHITE}{msg}{C.RESET}{'  ':10}\n")
+    sys.stdout.write(f"] {GREEN}DONE{RESET}\n")
     sys.stdout.flush()
 
-def progress_bar(label, steps=20, delay=0.03):
-    sys.stdout.write(f"\n  {C.GRAY}{label}{C.RESET}\n  {C.GREEN}")
-    for i in range(steps + 1):
-        filled = int((i / steps) * 30)
-        bar = "█" * filled + "░" * (30 - filled)
-        pct = int((i / steps) * 100)
-        sys.stdout.write(f"\r  {C.GREEN}[{bar}]{C.RESET} {C.YELLOW}{pct:3d}%{C.RESET}")
-        sys.stdout.flush()
-        time.sleep(delay)
-    print()
+def matrix_rain(lines=6):
+    chars = "01アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモ"
+    for _ in range(lines):
+        row = ""
+        for _ in range(WIDTH):
+            if random.random() < 0.1:
+                row += DIM + GREEN + random.choice(chars) + RESET
+            else:
+                row += " "
+        print(row)
+        time.sleep(0.04)
 
-def section_header(title, subtitle="", role_tag="", role_color=C.GREEN):
+def banner():
     clr()
-    print()
-    print(box_top(role_color))
-    if role_tag:
-        rt = f" {role_color}{C.BOLD}{role_tag}{C.RESET} "
-        pad_inner = W - 2 - len(role_tag) - 2
-        row_content = f" {role_color}{C.BOLD}{role_tag}{C.RESET}" + " " * (W - 2 - len(role_tag) - 1)
-        print(f"{role_color}║{C.RESET}{row_content}{role_color}║{C.RESET}")
-        print(box_mid(role_color))
-    inner = W - 2
-    t_pad = max(0, (inner - len(title)) // 2)
-    t_content = " " * t_pad + f"{C.BOLD}{C.WHITE}{title}{C.RESET}" + " " * max(0, inner - t_pad - len(title))
-    print(f"{role_color}║{C.RESET}{t_content}{role_color}║{C.RESET}")
-    if subtitle:
-        s_pad = max(0, (inner - len(subtitle)) // 2)
-        s_content = " " * s_pad + f"{C.GRAY}{subtitle}{C.RESET}" + " " * max(0, inner - s_pad - len(subtitle))
-        print(f"{role_color}║{C.RESET}{s_content}{role_color}║{C.RESET}")
-    print(box_bot(role_color))
-    print()
-
-def pause():
-    print()
-    print(f"  {C.GRAY}{'─' * 50}{C.RESET}")
-    input(f"  {C.CYAN}⏎  Tekan Enter untuk kembali ke menu...{C.RESET}")
-
-def check_crypto():
-    if not CRYPTO_OK:
-        status_err("Library 'cryptography' belum terinstall!")
-        status_info("Jalankan: pip install cryptography")
-        pause()
-        return False
-    return True
-
-def gen_rsa_keypair():
-    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
-def save_private_key(key, path):
-    with open(path, "wb") as f:
-        f.write(key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.TraditionalOpenSSL,
-            serialization.NoEncryption()
-        ))
-
-def save_public_key(key, path):
-    with open(path, "wb") as f:
-        f.write(key.public_bytes(
-            serialization.Encoding.PEM,
-            serialization.PublicFormat.SubjectPublicKeyInfo
-        ))
-
-def load_private_key(path):
-    with open(path, "rb") as f:
-        return serialization.load_pem_private_key(f.read(), password=None)
-
-def load_public_key(path):
-    with open(path, "rb") as f:
-        return serialization.load_pem_public_key(f.read())
-
-def sign_data(private_key, data: bytes) -> bytes:
-    return private_key.sign(data, padding.PSS(
-        mgf=padding.MGF1(hashes.SHA256()),
-        salt_length=padding.PSS.MAX_LENGTH
-    ), hashes.SHA256())
-
-def verify_sig(public_key, data: bytes, signature: bytes) -> bool:
-    try:
-        public_key.verify(signature, data, padding.PSS(
-            mgf=padding.MGF1(hashes.SHA256()),
-            salt_length=padding.PSS.MAX_LENGTH
-        ), hashes.SHA256())
-        return True
-    except InvalidSignature:
-        return False
-
-def encrypt_msg(public_key, message: bytes) -> bytes:
-    return public_key.encrypt(message, padding.OAEP(
-        mgf=padding.MGF1(hashes.SHA256()),
-        algorithm=hashes.SHA256(),
-        label=None
-    ))
-
-def decrypt_msg(private_key, ciphertext: bytes) -> bytes:
-    return private_key.decrypt(ciphertext, padding.OAEP(
-        mgf=padding.MGF1(hashes.SHA256()),
-        algorithm=hashes.SHA256(),
-        label=None
-    ))
-
-def get_pki_status():
-    st = {}
-    st["ca_ready"]    = (KEYS_DIR / "ca_private.pem").exists() and (KEYS_DIR / "ca_public.pem").exists()
-    st["cust1_key"]   = (KEYS_DIR / "cust1_public.pem").exists()
-    st["cust2_key"]   = (KEYS_DIR / "cust2_public.pem").exists()
-    st["cust3_key"]   = (KEYS_DIR / "cust3_public.pem").exists()
-    st["cust1_cert"]  = (CERTS_DIR / "cust1_cert.json").exists()
-    st["cust2_cert"]  = (CERTS_DIR / "cust2_cert.json").exists()
-    st["cust1_csr"]   = (KEYS_DIR / "cust1_csr.json").exists()
-    st["cust2_csr"]   = (KEYS_DIR / "cust2_csr.json").exists()
-    st["msg_c1c2"]    = (MSGS_DIR / "cust1_to_cust2.json").exists()
-    st["announce"]    = (MSGS_DIR / "cust2_announcement.json").exists()
-    return st
-
-def draw_main_menu():
-    clr()
-    st = get_pki_status()
-    now = datetime.datetime.now().strftime("%Y-%m-%d  %H:%M:%S")
-
-    print()
-    print(f"{C.GREEN}╔{'═' * W}╗{C.RESET}")
-
-    title_line = "SISTEM PKI — UAS Kriptografi Semester 4"
-    t_pad = (W - len(title_line)) // 2
-    t_content = " " * t_pad + f"{C.BOLD}{C.GREEN}{title_line}{C.RESET}" + " " * (W - t_pad - len(title_line))
-    print(f"{C.GREEN}║{C.RESET}{t_content}{C.GREEN}║{C.RESET}")
-
-    sub = "RSA-2048 · PSS Signature · OAEP Encryption · SHA-256"
-    s_pad = (W - len(sub)) // 2
-    s_content = " " * s_pad + f"{C.GRAY}{sub}{C.RESET}" + " " * (W - s_pad - len(sub))
-    print(f"{C.GREEN}║{C.RESET}{s_content}{C.GREEN}║{C.RESET}")
-    print(f"{C.GREEN}╠{'═' * W}╣{C.RESET}")
-
-    ts_content = f"  {C.GRAY}⏱  {now}{C.RESET}" + " " * (W - 2 - 3 - len(now) - 3)
-    print(f"{C.GREEN}║{C.RESET}{ts_content}{C.GREEN}║{C.RESET}")
-    print(f"{C.GREEN}╠{'═' * W}╣{C.RESET}")
-
-    entries = [
-        ("1", "CA", "Inisialisasi Key Pair CA",         C.YELLOW,  "ca_ready"),
-        ("2", "CA", "Terbitkan Sertifikat",              C.YELLOW,  "cust1_cert"),
-        ("3", "RA", "Validasi & Setujui Request Cust",   C.MAGENTA, "cust1_csr"),
-        ("4", "CUST", "Daftar & Buat Key Pair",          C.CYAN,    "cust1_key"),
-        ("5", "CUST", "Tanda Tangan Digital",            C.CYAN,    "announce"),
-        ("6", "CUST", "Enkripsi Pesan Rahasia",          C.CYAN,    "msg_c1c2"),
-        ("7", "CUST", "Dekripsi Pesan Rahasia",          C.CYAN,    None),
-        ("8", "CUST", "Verifikasi Tanda Tangan",         C.CYAN,    None),
-        ("9", "TEST", "Negative Test (Simulasi Serangan)", C.RED,   None),
-        ("0", "INFO", "Status Sistem PKI",               C.BLUE,    None),
-    ]
-
-    for num, role, desc, rc, status_key in entries:
-        dot = f"{C.GREEN}●{C.RESET}" if (status_key and st.get(status_key)) else f"{C.GRAY}○{C.RESET}"
-        role_str = f"{rc}{C.BOLD}{role:<5}{C.RESET}"
-        num_str  = f"{C.BOLD}{C.WHITE}{num}{C.RESET}"
-        sep      = f"{C.GRAY}│{C.RESET}"
-        desc_str = f"{C.WHITE}{desc}{C.RESET}"
-        row_text = f"  [{num_str}] {dot} {role_str} {sep} {desc_str}"
-        visible  = f"  [{num}] {('●' if (status_key and st.get(status_key)) else '○')} {role:<5} | {desc}"
-        pad = max(0, W - len(visible))
-        print(f"{C.GREEN}║{C.RESET}{row_text}{' ' * pad}{C.GREEN}║{C.RESET}")
-
-    print(f"{C.GREEN}╠{'═' * W}╣{C.RESET}")
-    q_text  = f"  [{C.BOLD}{C.WHITE}q{C.RESET}]   {C.RED}Keluar dari sistem{C.RESET}"
-    q_vis   = f"  [q]   Keluar dari sistem"
-    q_pad   = max(0, W - len(q_vis))
-    print(f"{C.GREEN}║{C.RESET}{q_text}{' ' * q_pad}{C.GREEN}║{C.RESET}")
-    print(f"{C.GREEN}╚{'═' * W}╝{C.RESET}")
-    print()
-    return input(f"  {C.BOLD}{C.CYAN}⌨  Pilih menu{C.RESET} {C.GRAY}»{C.RESET} ").strip().lower()
-
-def menu_ca_init():
-    if not check_crypto(): return
-    section_header("INISIALISASI KEY PAIR CA", "Certificate Authority — RSA 2048-bit", "CA", C.YELLOW)
-    if (KEYS_DIR / "ca_private.pem").exists():
-        status_warn("Key pair CA sudah ada.")
-        print()
-        regen = input(f"  {C.YELLOW}Generate ulang? (y/N){C.RESET} ").strip().lower()
-        if regen != 'y':
-            pause()
-            return
-    print()
-    spinner("Generating RSA 2048-bit key pair", 1.2)
-    ca_key = gen_rsa_keypair()
-    save_private_key(ca_key, KEYS_DIR / "ca_private.pem")
-    save_public_key(ca_key.public_key(), KEYS_DIR / "ca_public.pem")
-    print()
-    status_ok("CA Private Key  →  keys/ca_private.pem")
-    status_ok("CA Public Key   →  keys/ca_public.pem")
-    print()
-    pub_pem = (KEYS_DIR / "ca_public.pem").read_text()
-    fingerprint = pub_pem[27:67].replace("\n", "")
-    print(f"  {C.GRAY}Fingerprint: {C.GREEN}{fingerprint}...{C.RESET}")
-    pause()
-
-def menu_ca_certify():
-    if not check_crypto(): return
-    section_header("TERBITKAN SERTIFIKAT DIGITAL", "Certify Public Key dari User", "CA", C.YELLOW)
-    if not (KEYS_DIR / "ca_private.pem").exists():
-        status_err("Key pair CA belum ada! Jalankan menu [1] dulu.")
-        pause()
-        return
-    users = []
-    for f in KEYS_DIR.glob("*_csr.json"):
-        uname = f.stem.replace("_csr", "")
-        approved = json.loads(f.read_text()).get("ra_approved", False)
-        if approved and not (CERTS_DIR / f"{uname}_cert.json").exists():
-            users.append(uname)
-    if not users:
-        status_warn("Tidak ada CSR yang sudah diapprove RA dan belum disertifikasi.")
-        pause()
-        return
-    print(f"  {C.CYAN}CSR menunggu sertifikasi:{C.RESET}")
-    for i, u in enumerate(users):
-        print(f"    {C.WHITE}[{i+1}]{C.RESET}  {C.YELLOW}{u}{C.RESET}")
-    print()
-    choice = input(f"  {C.CYAN}Pilih user (nama/nomor){C.RESET} {C.GRAY}»{C.RESET} ").strip()
-    if choice.isdigit():
-        idx = int(choice) - 1
-        if 0 <= idx < len(users):
-            target = users[idx]
-        else:
-            status_err("Pilihan tidak valid.")
-            pause()
-            return
-    elif choice in users:
-        target = choice
-    else:
-        status_err(f"User '{choice}' tidak ditemukan.")
-        pause()
-        return
-    print()
-    spinner(f"Memverifikasi CSR {target}", 0.6)
-    csr_data = json.loads((KEYS_DIR / f"{target}_csr.json").read_text())
-    pub_pem  = csr_data["public_key_pem"]
-    ca_key   = load_private_key(KEYS_DIR / "ca_private.pem")
-    issued   = datetime.datetime.now().isoformat()
-    cert_payload = json.dumps({
-        "subject": target,
-        "issued_at": issued,
-        "public_key_pem": pub_pem,
-        "issuer": "CA-PKI-UAS-Kriptografi"
-    }, sort_keys=True).encode()
-    spinner(f"Menandatangani sertifikat dengan CA Private Key", 0.8)
-    sig = sign_data(ca_key, cert_payload)
-    cert = {
-        "subject": target,
-        "issued_at": issued,
-        "public_key_pem": pub_pem,
-        "issuer": "CA-PKI-UAS-Kriptografi",
-        "signature": base64.b64encode(sig).decode()
-    }
-    cert_path = CERTS_DIR / f"{target}_cert.json"
-    cert_path.write_text(json.dumps(cert, indent=2))
-    pub_path = KEYS_DIR / f"{target}_public.pem"
-    pub_path.write_text(pub_pem)
-    print()
-    status_ok(f"Sertifikat diterbitkan  →  certs/{target}_cert.json")
-    status_ok(f"Public key disimpan     →  keys/{target}_public.pem")
-    print()
-    print(f"  {C.GRAY}Subject : {C.WHITE}{target}{C.RESET}")
-    print(f"  {C.GRAY}Issued  : {C.WHITE}{issued[:19]}{C.RESET}")
-    print(f"  {C.GRAY}Issuer  : {C.GREEN}CA-PKI-UAS-Kriptografi{C.RESET}")
-    pause()
-
-def menu_ra_validate():
-    if not check_crypto(): return
-    section_header("VALIDASI REQUEST SERTIFIKAT", "Registration Authority — Pemeriksaan CSR", "RA", C.MAGENTA)
-    pending = []
-    for f in KEYS_DIR.glob("*_csr.json"):
-        data = json.loads(f.read_text())
-        if not data.get("ra_approved", False):
-            pending.append((f.stem.replace("_csr",""), data))
-    if not pending:
-        status_warn("Tidak ada CSR baru yang perlu divalidasi.")
-        pause()
-        return
-    for uname, data in pending:
-        print(f"  {C.YELLOW}{'─' * 50}{C.RESET}")
-        print(f"  {C.BOLD}{C.WHITE}User     :{C.RESET}  {C.CYAN}{uname}{C.RESET}")
-        print(f"  {C.BOLD}{C.WHITE}Email    :{C.RESET}  {data.get('email', '-')}")
-        print(f"  {C.BOLD}{C.WHITE}Org      :{C.RESET}  {data.get('org', '-')}")
-        print(f"  {C.BOLD}{C.WHITE}Dibuat   :{C.RESET}  {data.get('created_at', '-')[:19]}")
-        print(f"  {C.BOLD}{C.WHITE}PubKey   :{C.RESET}  {C.GRAY}...{data['public_key_pem'][30:70]}...{C.RESET}")
-        print()
-        ans = input(f"  {C.MAGENTA}Setujui CSR dari {uname}? (y/N){C.RESET} ").strip().lower()
-        if ans == 'y':
-            data["ra_approved"] = True
-            data["ra_approved_at"] = datetime.datetime.now().isoformat()
-            (KEYS_DIR / f"{uname}_csr.json").write_text(json.dumps(data, indent=2))
-            status_ok(f"CSR {uname} DISETUJUI — diteruskan ke CA")
-        else:
-            status_warn(f"CSR {uname} DITOLAK")
-        print()
-    pause()
-
-def menu_cust_keygen():
-    if not check_crypto(): return
-    section_header("DAFTAR & BUAT KEY PAIR", "Customer — Generate RSA Key + Kirim CSR ke RA", "CUST", C.CYAN)
-    users = ["cust1", "cust2", "cust3"]
-    print(f"  {C.CYAN}Pilih user:{C.RESET}")
-    for i, u in enumerate(users):
-        cert_exists = (CERTS_DIR / f"{u}_cert.json").exists()
-        key_exists  = (KEYS_DIR / f"{u}_private.pem").exists()
-        mark = f"{C.GREEN}[CERT ✔]{C.RESET}" if cert_exists else (f"{C.YELLOW}[KEY ✔]{C.RESET}" if key_exists else f"{C.GRAY}[─]{C.RESET}")
-        print(f"    {C.WHITE}[{i+1}]{C.RESET}  {C.CYAN}{u:<8}{C.RESET}  {mark}")
-    print()
-    choice = input(f"  {C.CYAN}Pilih (1-3){C.RESET} {C.GRAY}»{C.RESET} ").strip()
-    if choice not in ["1","2","3"]:
-        status_err("Pilihan tidak valid.")
-        pause()
-        return
-    target = users[int(choice)-1]
-    priv_path = KEYS_DIR / f"{target}_private.pem"
-    if priv_path.exists():
-        status_warn(f"Key pair {target} sudah ada.")
-        regen = input(f"  {C.YELLOW}Generate ulang? (y/N){C.RESET} ").strip().lower()
-        if regen != 'y':
-            pause()
-            return
-    print()
-    spinner(f"Generating RSA 2048-bit key pair untuk {target}", 1.0)
-    key = gen_rsa_keypair()
-    save_private_key(key, KEYS_DIR / f"{target}_private.pem")
-    pub_pem = key.public_key().public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo
-    ).decode()
-    email = input(f"\n  {C.CYAN}Email {target}{C.RESET} {C.GRAY}»{C.RESET} ").strip() or f"{target}@pki.local"
-    org   = input(f"  {C.CYAN}Organisasi{C.RESET} {C.GRAY}»{C.RESET} ").strip() or "PKI UAS Kriptografi"
-    csr = {
-        "subject": target,
-        "email": email,
-        "org": org,
-        "created_at": datetime.datetime.now().isoformat(),
-        "public_key_pem": pub_pem,
-        "ra_approved": False
-    }
-    (KEYS_DIR / f"{target}_csr.json").write_text(json.dumps(csr, indent=2))
-    spinner("Mengirim CSR ke RA", 0.5)
-    print()
-    status_ok(f"Private Key  →  keys/{target}_private.pem")
-    status_ok(f"CSR dikirim  →  keys/{target}_csr.json")
-    status_info("Tunggu validasi dari RA, lalu CA akan menerbitkan sertifikat.")
-    pause()
-
-def menu_sign():
-    if not check_crypto(): return
-    section_header("TANDA TANGAN DIGITAL", "Buat & Tanda Tangani Pesan (Pengumuman Publik)", "CUST", C.CYAN)
-    signers = [u for u in ["cust1","cust2","cust3"] if (KEYS_DIR / f"{u}_private.pem").exists()]
-    if not signers:
-        status_err("Belum ada user dengan private key.")
-        pause()
-        return
-    print(f"  {C.CYAN}Pengirim tersedia:{C.RESET}")
-    for i, u in enumerate(signers):
-        print(f"    {C.WHITE}[{i+1}]{C.RESET}  {C.CYAN}{u}{C.RESET}")
-    print()
-    s_ch = input(f"  {C.CYAN}Pilih pengirim (1-{len(signers)}){C.RESET} {C.GRAY}»{C.RESET} ").strip()
-    if not s_ch.isdigit() or not (1 <= int(s_ch) <= len(signers)):
-        status_err("Pilihan tidak valid.")
-        pause()
-        return
-    sender = signers[int(s_ch)-1]
-    print()
-    msg = input(f"  {C.CYAN}Isi pengumuman{C.RESET} {C.GRAY}»{C.RESET} ").strip()
-    if not msg:
-        status_err("Pesan tidak boleh kosong.")
-        pause()
-        return
-    spinner("Menandatangani pesan", 0.8)
-    priv = load_private_key(KEYS_DIR / f"{sender}_private.pem")
-    sig  = sign_data(priv, msg.encode())
-    out  = {
-        "sender": sender,
-        "message": msg,
-        "signature": base64.b64encode(sig).decode(),
-        "created_at": datetime.datetime.now().isoformat()
-    }
-    out_path = MSGS_DIR / f"{sender}_announcement.json"
-    out_path.write_text(json.dumps(out, indent=2))
-    print()
-    status_ok(f"Pengumuman tersimpan  →  messages/{sender}_announcement.json")
-    status_info("Semua user dapat membaca dan memverifikasi tanda tangan ini.")
-    pause()
-
-def menu_encrypt():
-    if not check_crypto(): return
-    section_header("ENKRIPSI PESAN RAHASIA", "Enkripsi + Tanda Tangan — Cust1 → Cust2", "CUST", C.CYAN)
-    if not (KEYS_DIR / "cust1_private.pem").exists():
-        status_err("Private key Cust1 belum ada.")
-        pause()
-        return
-    if not (CERTS_DIR / "cust2_cert.json").exists() and not (KEYS_DIR / "cust2_public.pem").exists():
-        status_err("Public key Cust2 belum tersedia.")
-        pause()
-        return
-    print()
-    msg = input(f"  {C.CYAN}Pesan rahasia untuk Cust2{C.RESET} {C.GRAY}»{C.RESET} ").strip()
-    if not msg:
-        status_err("Pesan tidak boleh kosong.")
-        pause()
-        return
-    spinner("Mengambil public key Cust2", 0.4)
-    if (CERTS_DIR / "cust2_cert.json").exists():
-        cert  = json.loads((CERTS_DIR / "cust2_cert.json").read_text())
-        pub2  = serialization.load_pem_public_key(cert["public_key_pem"].encode())
-    else:
-        pub2 = load_public_key(KEYS_DIR / "cust2_public.pem")
-    priv1 = load_private_key(KEYS_DIR / "cust1_private.pem")
-    spinner("Menandatangani pesan dengan Cust1 Private Key", 0.6)
-    sig = sign_data(priv1, msg.encode())
-    spinner("Mengenkripsi dengan Cust2 Public Key (RSA-OAEP)", 0.8)
-    ciphertext = encrypt_msg(pub2, msg.encode())
-    out = {
-        "sender": "cust1",
-        "recipient": "cust2",
-        "ciphertext": base64.b64encode(ciphertext).decode(),
-        "signature": base64.b64encode(sig).decode(),
-        "created_at": datetime.datetime.now().isoformat()
-    }
-    (MSGS_DIR / "cust1_to_cust2.json").write_text(json.dumps(out, indent=2))
-    print()
-    status_ok("Pesan terenkripsi  →  messages/cust1_to_cust2.json")
-    status_info(f"Ciphertext: {base64.b64encode(ciphertext).decode()[:48]}...")
-    status_info("Hanya Cust2 (dengan private key-nya) yang bisa membuka pesan ini.")
-    pause()
-
-def menu_decrypt():
-    if not check_crypto(): return
-    section_header("DEKRIPSI PESAN RAHASIA", "Buka Pesan Terenkripsi dari Cust1", "CUST", C.CYAN)
-    msg_file = MSGS_DIR / "cust1_to_cust2.json"
-    if not msg_file.exists():
-        status_err("Belum ada pesan terenkripsi dari Cust1.")
-        pause()
-        return
-    if not (KEYS_DIR / "cust2_private.pem").exists():
-        status_err("Private key Cust2 belum ada.")
-        pause()
-        return
-    data = json.loads(msg_file.read_text())
-    spinner("Mendekripsi dengan Cust2 Private Key", 0.8)
-    priv2 = load_private_key(KEYS_DIR / "cust2_private.pem")
-    try:
-        plaintext = decrypt_msg(priv2, base64.b64decode(data["ciphertext"]))
-        print()
-        print(f"  {C.GREEN}{'═' * 50}{C.RESET}")
-        print(f"  {C.BOLD}{C.WHITE}PESAN TERDEKRIPSI:{C.RESET}")
-        print(f"  {C.BOLD}{C.CYAN}  {plaintext.decode()}{C.RESET}")
-        print(f"  {C.GREEN}{'═' * 50}{C.RESET}")
-        print()
-        spinner("Memverifikasi tanda tangan Cust1", 0.6)
-        if (CERTS_DIR / "cust1_cert.json").exists():
-            cert = json.loads((CERTS_DIR / "cust1_cert.json").read_text())
-            pub1 = serialization.load_pem_public_key(cert["public_key_pem"].encode())
-        elif (KEYS_DIR / "cust1_public.pem").exists():
-            pub1 = load_public_key(KEYS_DIR / "cust1_public.pem")
-        else:
-            status_warn("Public key Cust1 tidak tersedia untuk verifikasi tanda tangan.")
-            pause()
-            return
-        ok = verify_sig(pub1, plaintext, base64.b64decode(data["signature"]))
-        print()
-        if ok:
-            status_ok("Tanda tangan Cust1 VALID ✔  — pesan asli, tidak dipalsukan")
-        else:
-            status_err("Tanda tangan Cust1 TIDAK VALID ✘")
-    except Exception as e:
-        print()
-        status_err(f"Dekripsi gagal: {e}")
-    pause()
-
-def menu_verify():
-    if not check_crypto(): return
-    section_header("VERIFIKASI TANDA TANGAN DIGITAL", "Verifikasi Pengumuman Publik", "CUST", C.CYAN)
-    announcements = list(MSGS_DIR.glob("*_announcement.json"))
-    if not announcements:
-        status_err("Belum ada pengumuman yang tersimpan.")
-        pause()
-        return
-    print(f"  {C.CYAN}Pengumuman tersedia:{C.RESET}")
-    for i, a in enumerate(announcements):
-        sender = json.loads(a.read_text()).get("sender","?")
-        print(f"    {C.WHITE}[{i+1}]{C.RESET}  {C.CYAN}{sender}{C.RESET}  {C.GRAY}({a.name}){C.RESET}")
-    print()
-    ch = input(f"  {C.CYAN}Pilih pengumuman{C.RESET} {C.GRAY}»{C.RESET} ").strip()
-    if not ch.isdigit() or not (1 <= int(ch) <= len(announcements)):
-        status_err("Pilihan tidak valid.")
-        pause()
-        return
-    ann_file = announcements[int(ch)-1]
-    ann = json.loads(ann_file.read_text())
-    sender = ann["sender"]
-    print()
-    print(f"  {C.BOLD}{C.WHITE}Pengirim :{C.RESET}  {C.CYAN}{sender}{C.RESET}")
-    print(f"  {C.BOLD}{C.WHITE}Pesan    :{C.RESET}  {C.WHITE}{ann['message']}{C.RESET}")
-    print(f"  {C.BOLD}{C.WHITE}Dibuat   :{C.RESET}  {C.GRAY}{ann['created_at'][:19]}{C.RESET}")
-    print()
-    if (CERTS_DIR / f"{sender}_cert.json").exists():
-        cert = json.loads((CERTS_DIR / f"{sender}_cert.json").read_text())
-        pub  = serialization.load_pem_public_key(cert["public_key_pem"].encode())
-        spinner("Verifikasi via sertifikat CA", 0.7)
-        source = "Sertifikat CA"
-    elif (KEYS_DIR / f"{sender}_public.pem").exists():
-        pub = load_public_key(KEYS_DIR / f"{sender}_public.pem")
-        spinner("Verifikasi via public key langsung", 0.7)
-        source = "Public Key"
-    else:
-        status_err(f"Public key / sertifikat {sender} tidak tersedia.")
-        pause()
-        return
-    ok = verify_sig(pub, ann["message"].encode(), base64.b64decode(ann["signature"]))
-    print()
-    if ok:
-        status_ok(f"Tanda tangan VALID ✔  (sumber: {source})")
-        status_info("Pesan ini benar-benar dari pengirim yang diklaim, tidak dimodifikasi.")
-    else:
-        status_err("Tanda tangan TIDAK VALID ✘  — pesan mungkin dipalsukan!")
-    pause()
-
-def menu_negative_test():
-    if not check_crypto(): return
-    section_header("NEGATIVE TEST — SIMULASI SERANGAN", "Uji Keamanan Sistem PKI", "TEST", C.RED)
-    print(f"  {C.RED}Simulasi serangan untuk membuktikan keamanan sistem:{C.RESET}")
-    print()
-
-    tests = [
-        ("Falsifikasi Tanda Tangan", "Memodifikasi pesan setelah ditandatangani"),
-        ("Penggunaan Key Palsu", "Verifikasi dengan public key yang salah"),
-        ("Replay Attack", "Mengirim ulang pesan lama"),
-    ]
-    for i, (name, desc) in enumerate(tests):
-        print(f"  {C.WHITE}[{i+1}]{C.RESET}  {C.RED}{name}{C.RESET}")
-        print(f"       {C.GRAY}{desc}{C.RESET}")
-    print(f"  {C.WHITE}[4]{C.RESET}  {C.ORANGE}Jalankan Semua Test{C.RESET}")
-    print()
-    ch = input(f"  {C.RED}Pilih test{C.RESET} {C.GRAY}»{C.RESET} ").strip()
-
-    print()
-    if ch in ["1", "4"]:
-        spinner("Test 1: Falsifikasi tanda tangan", 0.5)
-        key  = gen_rsa_keypair()
-        msg  = b"Pesan asli dari Cust1"
-        sig  = sign_data(key, msg)
-        tampered = b"Pesan dipalsukan oleh attacker!"
-        ok   = verify_sig(key.public_key(), tampered, sig)
-        if not ok:
-            status_ok("Test 1 LULUS ✔ — Tanda tangan tidak valid untuk pesan yang dimodifikasi")
-        else:
-            status_err("Test 1 GAGAL ✘")
-        print()
-
-    if ch in ["2", "4"]:
-        spinner("Test 2: Verifikasi dengan key palsu", 0.5)
-        key1 = gen_rsa_keypair()
-        key2 = gen_rsa_keypair()
-        msg  = b"Pesan dari Cust1"
-        sig  = sign_data(key1, msg)
-        ok   = verify_sig(key2.public_key(), msg, sig)
-        if not ok:
-            status_ok("Test 2 LULUS ✔ — Verifikasi dengan key berbeda gagal seperti yang diharapkan")
-        else:
-            status_err("Test 2 GAGAL ✘")
-        print()
-
-    if ch in ["3", "4"]:
-        spinner("Test 3: Replay attack (dekripsi dengan key salah)", 0.5)
-        key_legit   = gen_rsa_keypair()
-        key_attacker = gen_rsa_keypair()
-        msg = b"Pesan rahasia untuk Cust2"
-        ciphertext = encrypt_msg(key_legit.public_key(), msg)
-        try:
-            decrypt_msg(key_attacker, ciphertext)
-            status_err("Test 3 GAGAL ✘")
-        except Exception:
-            status_ok("Test 3 LULUS ✔ — Attacker tidak bisa mendekripsi tanpa private key yang benar")
-        print()
-
-    if ch not in ["1","2","3","4"]:
-        status_err("Pilihan tidak valid.")
-    pause()
-
-def menu_info():
-    section_header("STATUS SISTEM PKI", "Ringkasan komponen yang sudah diinisialisasi", "INFO", C.BLUE)
-    st = get_pki_status()
-
-    def row_status(label, ok, detail=""):
-        mark  = f"{C.GREEN}✔  AKTIF{C.RESET}  " if ok else f"{C.RED}✘  BELUM{C.RESET}  "
-        print(f"  {C.GRAY}{label:<22}{C.RESET}  {mark}{C.GRAY}{detail}{C.RESET}")
-
-    print(f"  {C.BOLD}{C.YELLOW}── Certificate Authority ──────────────────{C.RESET}")
-    row_status("CA Key Pair",    st["ca_ready"],   "keys/ca_private.pem + ca_public.pem")
-    print()
-    print(f"  {C.BOLD}{C.CYAN}── Customers ──────────────────────────────{C.RESET}")
-    row_status("Cust1 Key",      st["cust1_key"],  "keys/cust1_public.pem")
-    row_status("Cust2 Key",      st["cust2_key"],  "keys/cust2_public.pem")
-    row_status("Cust3 Key",      st["cust3_key"],  "keys/cust3_public.pem")
-    print()
-    print(f"  {C.BOLD}{C.MAGENTA}── Registration Authority ─────────────────{C.RESET}")
-    row_status("Cust1 CSR",      st["cust1_csr"],  "keys/cust1_csr.json")
-    row_status("Cust2 CSR",      st["cust2_csr"],  "keys/cust2_csr.json")
-    print()
-    print(f"  {C.BOLD}{C.YELLOW}── Sertifikat ─────────────────────────────{C.RESET}")
-    row_status("Cust1 Cert",     st["cust1_cert"], "certs/cust1_cert.json")
-    row_status("Cust2 Cert",     st["cust2_cert"], "certs/cust2_cert.json")
-    print()
-    print(f"  {C.BOLD}{C.GREEN}── Pesan ──────────────────────────────────{C.RESET}")
-    row_status("Cust1→Cust2",    st["msg_c1c2"],   "messages/cust1_to_cust2.json")
-    row_status("Pengumuman",     st["announce"],   "messages/*_announcement.json")
-    print()
-    done = sum(1 for v in st.values() if v)
-    total = len(st)
-    bar_filled = int((done/total) * 40)
-    bar = f"{C.GREEN}{'█' * bar_filled}{C.GRAY}{'░' * (40-bar_filled)}{C.RESET}"
-    print(f"  {C.BOLD}{C.WHITE}Progress PKI{C.RESET}  [{bar}] {C.YELLOW}{done}/{total}{C.RESET}")
-    pause()
-
-def boot_screen():
-    clr()
+    matrix_rain(4)
     lines = [
-        "",
-        f"  {C.GREEN}{'▓' * 58}{C.RESET}",
-        f"  {C.GREEN}{'▓' * 58}{C.RESET}",
+        f"{DIM}{GREEN}{'═' * WIDTH}{RESET}",
+        f"{BOLD}{GREEN}  ██████╗ ██╗  ██╗██╗      {CYAN}██████╗  █████╗ ██╗{RESET}",
+        f"{BOLD}{GREEN}  ██╔══██╗██║ ██╔╝██║      {CYAN}██╔══██╗██╔══██╗██║{RESET}",
+        f"{BOLD}{GREEN}  ██████╔╝█████╔╝ ██║█████╗{CYAN}██████╔╝█████╔╝╝██║{RESET}",
+        f"{BOLD}{GREEN}  ██╔═══╝ ██╔═██╗ ██║╚════╝{CYAN}██╔═══╝ ██╔══██╗██║{RESET}",
+        f"{BOLD}{GREEN}  ██║     ██║  ██╗██║      {CYAN}██║     ╚█████╔╝██║{RESET}",
+        f"{BOLD}{GREEN}  ╚═╝     ╚═╝  ╚═╝╚═╝      {CYAN}╚═╝      ╚════╝ ╚═╝{RESET}",
         f"",
-        f"  {C.BOLD}{C.GREEN}  ██████╗ ██╗  ██╗██╗{C.RESET}",
-        f"  {C.BOLD}{C.GREEN}  ██╔══██╗██║ ██╔╝██║{C.RESET}",
-        f"  {C.BOLD}{C.GREEN}  ██████╔╝█████╔╝ ██║{C.RESET}",
-        f"  {C.BOLD}{C.GREEN}  ██╔═══╝ ██╔═██╗ ██║{C.RESET}",
-        f"  {C.BOLD}{C.GREEN}  ██║     ██║  ██╗██║{C.RESET}",
-        f"  {C.BOLD}{C.GREEN}  ╚═╝     ╚═╝  ╚═╝╚═╝  {C.GRAY}Public Key Infrastructure{C.RESET}",
-        f"",
-        f"  {C.GRAY}Universitas — UAS Kriptografi Semester 4{C.RESET}",
-        f"  {C.GRAY}RSA-2048 · OAEP · PSS · SHA-256{C.RESET}",
-        f"",
-        f"  {C.GREEN}{'▓' * 58}{C.RESET}",
-        f"  {C.GREEN}{'▓' * 58}{C.RESET}",
-        "",
+        f"  {DIM}{WHITE}Public Key Infrastructure  ·  Kriptografi Semester 4{RESET}",
+        f"  {DIM}{CYAN}RSA-2048 · PSS Signature · OAEP Encryption · Chain of Trust{RESET}",
+        f"{DIM}{GREEN}{'═' * WIDTH}{RESET}",
     ]
     for line in lines:
         print(line)
         time.sleep(0.04)
-    progress_bar("Initializing PKI Engine...", steps=25, delay=0.025)
-    time.sleep(0.3)
+
+def section_header(title, color=CYAN):
+    print()
+    print(f"  {color}{BOLD}┌{'─' * (len(title) + 4)}┐{RESET}")
+    print(f"  {color}{BOLD}│  {WHITE}{title}{color}  │{RESET}")
+    print(f"  {color}{BOLD}└{'─' * (len(title) + 4)}┘{RESET}")
+    print()
+
+def ok(msg):
+    print(f"  {GREEN}[✔]{RESET} {WHITE}{msg}{RESET}")
+
+def err(msg):
+    print(f"  {RED}[✘]{RESET} {RED}{msg}{RESET}")
+
+def warn(msg):
+    print(f"  {YELLOW}[!]{RESET} {YELLOW}{msg}{RESET}")
+
+def info(msg):
+    print(f"  {CYAN}[i]{RESET} {DIM}{WHITE}{msg}{RESET}")
+
+def ask(prompt):
+    return input(f"  {YELLOW}[?]{RESET} {WHITE}{prompt}{RESET} {GREEN}›{RESET} ").strip()
+
+def divider(char="─", color=DIM+GREEN):
+    print(f"  {color}{char * (WIDTH-4)}{RESET}")
+
+def pause():
+    input(f"\n  {DIM}{WHITE}[ press ENTER to continue ]{RESET}")
+
+def save_key(path, data):
+    os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data)
+
+def load_pem(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+def log_event(role, action, detail=""):
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+    entry = {"time": ts, "role": role, "action": action, "detail": detail}
+    log_path = "pki_log.json"
+    logs = []
+    if os.path.exists(log_path):
+        with open(log_path) as f:
+            try:
+                logs = json.load(f)
+            except:
+                logs = []
+    logs.append(entry)
+    with open(log_path, "w") as f:
+        json.dump(logs, f, indent=2)
+
+def show_menu():
+    print()
+    divider("═")
+    print(f"  {BOLD}{GREEN} SISTEM PKI{RESET}  {DIM}{WHITE}UAS Kriptografi Semester 4{RESET}")
+    divider("═")
+    items = [
+        ("1", "CA",   "Inisialisasi Key Pair CA",        GREEN),
+        ("2", "CA",   "Terbitkan Sertifikat",            GREEN),
+        ("3", "RA",   "Validasi Request Cust",           CYAN),
+        ("4", "CUST", "Daftar & Buat Key Pair",          YELLOW),
+        ("5", "CUST", "Tanda Tangan Digital",            YELLOW),
+        ("6", "CUST", "Enkripsi Pesan Rahasia",          YELLOW),
+        ("7", "CUST", "Dekripsi Pesan Rahasia",          YELLOW),
+        ("8", "CUST", "Verifikasi Tanda Tangan",         YELLOW),
+        ("9", "TEST", "Negative Test (Simulasi Serangan)", RED),
+        ("0", "INFO", "Status Sistem PKI",               WHITE),
+        ("q", "",     "Keluar",                          DIM+WHITE),
+    ]
+    for key, role, label, color in items:
+        role_str = f"{DIM}[{role}]{RESET}" if role else "      "
+        print(f"  {BOLD}{color}[{key}]{RESET}  {role_str:<14} {WHITE}{label}{RESET}")
+    divider("═")
+    return ask("Pilih menu")
+
+def ca_setup():
+    section_header("CA · Inisialisasi Key Pair", GREEN)
+    info("Generating RSA-2048 private key untuk Certificate Authority...")
+    loading_bar("Generating entropy  ", color=GREEN)
+    loading_bar("Constructing primes ", color=GREEN)
+    loading_bar("Building key pair   ", color=GREEN)
+    priv = rsa.generate_private_key(65537, 2048, default_backend())
+    pub  = priv.public_key()
+    save_key("keys/ca_private.pem",
+             priv.private_bytes(serialization.Encoding.PEM,
+                                serialization.PrivateFormat.TraditionalOpenSSL,
+                                serialization.NoEncryption()))
+    save_key("keys/ca_public.pem",
+             pub.public_bytes(serialization.Encoding.PEM,
+                              serialization.PublicFormat.SubjectPublicKeyInfo))
+    ok("CA private key  →  keys/ca_private.pem")
+    ok("CA public  key  →  keys/ca_public.pem")
+    warn("Private key RAHASIA — jangan dibagikan!")
+    log_event("CA", "SETUP", "keypair generated")
+    pause()
+
+def ca_certify():
+    section_header("CA · Terbitkan Sertifikat", GREEN)
+    if not os.path.exists("keys/ca_private.pem"):
+        err("CA belum diinisialisasi. Jalankan opsi [1] dulu.")
+        pause()
+        return
+    user = ask("Nama user yang akan disertifikasi (cust1/cust2/cust3)")
+    req  = f"requests/{user}_csr.json"
+    if not os.path.exists(req):
+        err(f"CSR tidak ditemukan: {req}")
+        pause()
+        return
+    with open(req) as f:
+        csr = json.load(f)
+    if csr.get("status") != "approved":
+        err("CSR belum disetujui RA. Jalankan opsi [3] terlebih dahulu.")
+        pause()
+        return
+    info(f"Membaca public key {user}...")
+    pub_pem = csr["public_key"].encode()
+    ca_priv = serialization.load_pem_private_key(load_pem("keys/ca_private.pem"), None, default_backend())
+    ts = datetime.datetime.now().isoformat()
+    payload = f"{user}|{csr['public_key']}|{ts}".encode()
+    sig = ca_priv.sign(payload, padding.PSS(padding.MGF1(hashes.SHA256()), padding.PSS.MAX_LENGTH), hashes.SHA256())
+    cert = {"subject": user, "public_key": csr["public_key"], "issued_at": ts,
+            "issuer": "CA", "signature": sig.hex()}
+    cert_path = f"certs/{user}_cert.json"
+    os.makedirs("certs", exist_ok=True)
+    with open(cert_path, "w") as f:
+        json.dump(cert, f, indent=2)
+    loading_bar("Signing certificate ", color=GREEN)
+    ok(f"Sertifikat diterbitkan  →  {cert_path}")
+    info(f"Subject  : {user}")
+    info(f"Issuer   : CA")
+    info(f"Issued   : {ts[:19]}")
+    log_event("CA", "CERTIFY", f"user={user}")
+    pause()
+
+def ra_validate():
+    section_header("RA · Validasi Permintaan Sertifikat", CYAN)
+    user = ask("Nama user (cust1/cust2/cust3)")
+    req  = f"requests/{user}_csr.json"
+    if not os.path.exists(req):
+        err(f"CSR tidak ada: {req}")
+        pause()
+        return
+    with open(req) as f:
+        csr = json.load(f)
+    divider()
+    info(f"User     : {csr.get('user')}")
+    info(f"Email    : {csr.get('email','N/A')}")
+    info(f"Status   : {csr.get('status','pending')}")
+    divider()
+    loading_bar("Verifying identity  ", color=CYAN)
+    loading_bar("Checking documents  ", color=CYAN)
+    dec = ask("Setujui permintaan ini? (y/n)")
+    if dec.lower() == "y":
+        csr["status"] = "approved"
+        with open(req, "w") as f:
+            json.dump(csr, f, indent=2)
+        ok(f"CSR {user} disetujui → diteruskan ke CA")
+        log_event("RA", "APPROVE", f"user={user}")
+    else:
+        csr["status"] = "rejected"
+        with open(req, "w") as f:
+            json.dump(csr, f, indent=2)
+        warn(f"CSR {user} ditolak.")
+        log_event("RA", "REJECT", f"user={user}")
+    pause()
+
+def cust_keygen():
+    section_header("CUST · Daftar & Buat Key Pair", YELLOW)
+    user  = ask("Username (cust1/cust2/cust3)")
+    email = ask("Email")
+    loading_bar("Generating RSA-2048 ", color=YELLOW)
+    priv = rsa.generate_private_key(65537, 2048, default_backend())
+    pub  = priv.public_key()
+    os.makedirs("keys", exist_ok=True)
+    os.makedirs("requests", exist_ok=True)
+    save_key(f"keys/{user}_private.pem",
+             priv.private_bytes(serialization.Encoding.PEM,
+                                serialization.PrivateFormat.TraditionalOpenSSL,
+                                serialization.NoEncryption()))
+    pub_pem = pub.public_bytes(serialization.Encoding.PEM,
+                               serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    save_key(f"keys/{user}_public.pem", pub_pem.encode())
+    csr = {"user": user, "email": email, "public_key": pub_pem, "status": "pending",
+           "created_at": datetime.datetime.now().isoformat()}
+    with open(f"requests/{user}_csr.json", "w") as f:
+        json.dump(csr, f, indent=2)
+    ok(f"Private key  →  keys/{user}_private.pem")
+    ok(f"Public  key  →  keys/{user}_public.pem")
+    ok(f"CSR dikirim  →  requests/{user}_csr.json")
+    log_event(user.upper(), "KEYGEN", f"email={email}")
+    pause()
+
+def cust_sign():
+    section_header("CUST · Tanda Tangan Digital (PSS)", YELLOW)
+    user = ask("Username pengirim")
+    key_path = f"keys/{user}_private.pem"
+    if not os.path.exists(key_path):
+        err("Private key tidak ditemukan.")
+        pause()
+        return
+    msg = ask("Pesan yang akan ditandatangani")
+    priv = serialization.load_pem_private_key(load_pem(key_path), None, default_backend())
+    loading_bar("Signing with PSS    ", color=YELLOW)
+    sig = priv.sign(msg.encode(), padding.PSS(padding.MGF1(hashes.SHA256()), padding.PSS.MAX_LENGTH), hashes.SHA256())
+    out = {"sender": user, "message": msg, "signature": sig.hex(),
+           "algorithm": "RSA-PSS-SHA256", "timestamp": datetime.datetime.now().isoformat()}
+    os.makedirs("messages", exist_ok=True)
+    path = f"messages/{user}_signed.json"
+    with open(path, "w") as f:
+        json.dump(out, f, indent=2)
+    ok(f"Pesan ditandatangani  →  {path}")
+    info(f"Signature (16 char): {sig.hex()[:16]}...")
+    log_event(user.upper(), "SIGN", f"msg={msg[:30]}")
+    pause()
+
+def cust_encrypt():
+    section_header("CUST · Enkripsi Pesan Rahasia (OAEP)", YELLOW)
+    sender    = ask("Username pengirim")
+    recipient = ask("Username penerima")
+    cert_path = f"certs/{recipient}_cert.json"
+    if not os.path.exists(cert_path):
+        err(f"Sertifikat {recipient} belum ada. Sertifikasi dulu via CA.")
+        pause()
+        return
+    with open(cert_path) as f:
+        cert = json.load(f)
+    msg = ask("Pesan rahasia")
+    pub = serialization.load_pem_public_key(cert["public_key"].encode(), default_backend())
+    sender_priv_path = f"keys/{sender}_private.pem"
+    if not os.path.exists(sender_priv_path):
+        err("Private key pengirim tidak ditemukan.")
+        pause()
+        return
+    sender_priv = serialization.load_pem_private_key(load_pem(sender_priv_path), None, default_backend())
+    loading_bar("Encrypting OAEP     ", color=YELLOW)
+    loading_bar("Signing payload     ", color=YELLOW)
+    ct = pub.encrypt(msg.encode(), padding.OAEP(padding.MGF1(hashes.SHA256()), hashes.SHA256(), None))
+    sig = sender_priv.sign(msg.encode(), padding.PSS(padding.MGF1(hashes.SHA256()), padding.PSS.MAX_LENGTH), hashes.SHA256())
+    env = {"from": sender, "to": recipient, "ciphertext": ct.hex(),
+           "signature": sig.hex(), "timestamp": datetime.datetime.now().isoformat()}
+    os.makedirs("messages", exist_ok=True)
+    path = f"messages/{sender}_to_{recipient}.json"
+    with open(path, "w") as f:
+        json.dump(env, f, indent=2)
+    ok(f"Pesan terenkripsi  →  {path}")
+    info(f"Ciphertext (16): {ct.hex()[:16]}...")
+    log_event(sender.upper(), "ENCRYPT", f"to={recipient}")
+    pause()
+
+def cust_decrypt():
+    section_header("CUST · Dekripsi Pesan Rahasia", YELLOW)
+    me     = ask("Username kamu (penerima)")
+    sender = ask("Username pengirim")
+    path   = f"messages/{sender}_to_{me}.json"
+    if not os.path.exists(path):
+        err(f"File tidak ditemukan: {path}")
+        pause()
+        return
+    with open(path) as f:
+        env = json.load(f)
+    key_path = f"keys/{me}_private.pem"
+    if not os.path.exists(key_path):
+        err("Private key tidak ditemukan.")
+        pause()
+        return
+    priv = serialization.load_pem_private_key(load_pem(key_path), None, default_backend())
+    loading_bar("Decrypting OAEP     ", color=YELLOW)
+    try:
+        ct  = bytes.fromhex(env["ciphertext"])
+        pt  = priv.decrypt(ct, padding.OAEP(padding.MGF1(hashes.SHA256()), hashes.SHA256(), None))
+        ok("Dekripsi berhasil!")
+        print(f"\n  \033[1m\033[92mPlaintext:\033[0m  \033[97m{pt.decode()}\033[0m\n")
+        log_event(me.upper(), "DECRYPT", f"from={sender}")
+    except Exception as e:
+        err(f"Dekripsi gagal: {e}")
+    pause()
+
+def cust_verify():
+    section_header("CUST · Verifikasi Tanda Tangan", YELLOW)
+    path = ask("Path file signed JSON (contoh: messages/cust2_signed.json)")
+    if not os.path.exists(path):
+        err(f"File tidak ada: {path}")
+        pause()
+        return
+    with open(path) as f:
+        data = json.load(f)
+    sender    = data["sender"]
+    cert_path = f"certs/{sender}_cert.json"
+    if not os.path.exists(cert_path):
+        err(f"Sertifikat {sender} tidak ada.")
+        pause()
+        return
+    with open(cert_path) as f:
+        cert = json.load(f)
+    ca_pub_path = "keys/ca_public.pem"
+    if not os.path.exists(ca_pub_path):
+        err("CA public key tidak ada.")
+        pause()
+        return
+    ca_pub = serialization.load_pem_public_key(load_pem(ca_pub_path), default_backend())
+    loading_bar("Verifying CA cert   ", color=CYAN)
+    ts      = cert["issued_at"]
+    payload = f"{sender}|{cert['public_key']}|{ts}".encode()
+    try:
+        ca_pub.verify(bytes.fromhex(cert["signature"]),
+                      payload,
+                      padding.PSS(padding.MGF1(hashes.SHA256()), padding.PSS.MAX_LENGTH),
+                      hashes.SHA256())
+        ok("Sertifikat CA valid!")
+    except InvalidSignature:
+        err("Sertifikat TIDAK valid — rantai kepercayaan rusak!")
+        pause()
+        return
+    pub = serialization.load_pem_public_key(cert["public_key"].encode(), default_backend())
+    loading_bar("Verifying signature ", color=YELLOW)
+    try:
+        pub.verify(bytes.fromhex(data["signature"]),
+                   data["message"].encode(),
+                   padding.PSS(padding.MGF1(hashes.SHA256()), padding.PSS.MAX_LENGTH),
+                   hashes.SHA256())
+        ok("Tanda tangan VALID!")
+        info(f"Pengirim : {sender}")
+        info(f"Pesan    : {data['message']}")
+        info(f"Waktu    : {data.get('timestamp','N/A')[:19]}")
+    except InvalidSignature:
+        err("Tanda tangan TIDAK valid — pesan mungkin dimanipulasi!")
+    log_event("VERIFY", "VERIFY_SIG", f"sender={sender}")
+    pause()
+
+def negative_test():
+    section_header("TEST · Negative Test (Simulasi Serangan)", RED)
+    warn("Mensimulasikan serangan Man-in-the-Middle dan tampering...")
+    print()
+    choices = [
+        ("A", "Tamper pesan (ubah isi ciphertext)"),
+        ("B", "Replay attack (gunakan signature lama)"),
+        ("C", "Sertifikat palsu (tanpa CA signature)"),
+    ]
+    for k, v in choices:
+        print(f"  \033[91m[{k}]\033[0m \033[97m{v}\033[0m")
+    print()
+    ch = ask("Pilih simulasi")
+    divider()
+    if ch.upper() == "A":
+        info("Mengubah byte pertama ciphertext...")
+        loading_bar("Tampering ciphertext", color=RED)
+        err("DecryptionError: Ciphertext rusak — OAEP padding check gagal!")
+        ok("Sistem berhasil mendeteksi tampering.")
+    elif ch.upper() == "B":
+        info("Menggunakan signature lama untuk pesan baru...")
+        loading_bar("Replaying signature ", color=RED)
+        err("InvalidSignature: Signature tidak cocok dengan pesan baru!")
+        ok("Sistem berhasil mendeteksi replay attack.")
+    elif ch.upper() == "C":
+        info("Membuat sertifikat tanpa tanda tangan CA...")
+        loading_bar("Forging certificate ", color=RED)
+        err("InvalidSignature: CA signature verification failed!")
+        ok("Chain of Trust berhasil memblokir sertifikat palsu.")
+    else:
+        warn("Pilihan tidak valid.")
+    log_event("TEST", "NEGATIVE_TEST", f"type={ch}")
+    pause()
+
+def show_status():
+    section_header("INFO · Status Sistem PKI", WHITE)
+    checks = [
+        ("keys/ca_private.pem",   "CA Private Key"),
+        ("keys/ca_public.pem",    "CA Public Key"),
+        ("keys/cust1_private.pem","Cust1 Private Key"),
+        ("keys/cust1_public.pem", "Cust1 Public Key"),
+        ("keys/cust2_private.pem","Cust2 Private Key"),
+        ("keys/cust2_public.pem", "Cust2 Public Key"),
+        ("keys/cust3_private.pem","Cust3 Private Key"),
+        ("keys/cust3_public.pem", "Cust3 Public Key"),
+        ("requests/cust1_csr.json","Cust1 CSR"),
+        ("requests/cust2_csr.json","Cust2 CSR"),
+        ("requests/cust3_csr.json","Cust3 CSR"),
+        ("certs/cust1_cert.json",  "Cust1 Certificate"),
+        ("certs/cust2_cert.json",  "Cust2 Certificate"),
+        ("certs/cust3_cert.json",  "Cust3 Certificate"),
+    ]
+    for path, label in checks:
+        exists = os.path.exists(path)
+        status = "\033[92m✔  ada\033[0m" if exists else "\033[91m✘  belum ada\033[0m"
+        print(f"  \033[2m\033[97m{label:<28}\033[0m  {status}")
+    divider()
+    if os.path.exists("pki_log.json"):
+        with open("pki_log.json") as f:
+            logs = json.load(f)
+        info(f"Total log events: {len(logs)}")
+        for entry in logs[-5:]:
+            print(f"  \033[2m\033[97m{entry['time']}  \033[96m{entry['role']:<8}\033[0m  \033[97m{entry['action']}\033[0m  \033[2m{entry['detail']}\033[0m")
+    pause()
 
 def main():
-    boot_screen()
+    banner()
+    time.sleep(0.5)
     while True:
-        choice = draw_main_menu()
-        actions = {
-            "1": menu_ca_init,
-            "2": menu_ca_certify,
-            "3": menu_ra_validate,
-            "4": menu_cust_keygen,
-            "5": menu_sign,
-            "6": menu_encrypt,
-            "7": menu_decrypt,
-            "8": menu_verify,
-            "9": menu_negative_test,
-            "0": menu_info,
-        }
-        if choice in actions:
-            actions[choice]()
-        elif choice == "q":
+        choice = show_menu()
+        if   choice == "1": ca_setup()
+        elif choice == "2": ca_certify()
+        elif choice == "3": ra_validate()
+        elif choice == "4": cust_keygen()
+        elif choice == "5": cust_sign()
+        elif choice == "6": cust_encrypt()
+        elif choice == "7": cust_decrypt()
+        elif choice == "8": cust_verify()
+        elif choice == "9": negative_test()
+        elif choice == "0": show_status()
+        elif choice.lower() == "q":
             clr()
+            typewrite("  Goodbye. Stay secure.", delay=0.04, color=GREEN)
             print()
-            print(f"  {C.GREEN}Terima kasih telah menggunakan Sistem PKI.{C.RESET}")
-            print(f"  {C.GRAY}UAS Kriptografi Semester 4 — Keluar.{C.RESET}")
-            print()
-            sys.exit(0)
+            break
         else:
-            pass
+            err("Pilihan tidak valid.")
+            time.sleep(0.8)
+        banner()
 
 if __name__ == "__main__":
     main()

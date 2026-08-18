@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+
+# Generated at runtime — never commit private keys or certificates
+keys/
+certs/
+requests/
+messages/
+data/
+pki_log.json
